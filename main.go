@@ -16,7 +16,7 @@ import (
 )
 
 /* Command line arguments */
-var iface = flag.String("i", "en0", "Interface to get packets from")
+var iface = flag.String("i", "lo0", "Interface to get packets from")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 
 type interval struct {
@@ -33,6 +33,7 @@ type bidiStream struct {
 type httpStream struct {
 	netFlow, tcpFlow gopacket.Flow
 	readStream       tcpreader.ReaderStream
+	storage          *Storage
 }
 
 /* This reads both HTTP requests and HTTP responses in two separate streams */
@@ -48,10 +49,11 @@ func (h *httpStream) runOut() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
+			//			bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
 			req.Body.Close()
-			log.Println("Received request from stream", h.netFlow, h.tcpFlow,
-				":", req, "with", bodyBytes, "bytes in request body")
+			h.storage.sentRequest(req)
+			//			log.Println("Received request from stream", h.netFlow, h.tcpFlow,
+			//				":", req, "with", bodyBytes, "bytes in request body")
 		}
 	}
 }
@@ -76,10 +78,11 @@ func (h *httpStream) runIn() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			bodyBytes := tcpreader.DiscardBytesToEOF(resp.Body)
+			//			bodyBytes := tcpreader.DiscardBytesToEOF(resp.Body)
 			resp.Body.Close()
-			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
-				":", resp, "with", bodyBytes, "bytes in response body")
+			h.storage.receivedResponse(resp)
+			//			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
+			//				":", resp, "with", bodyBytes, "bytes in response body")
 		}
 
 		/* Match the response with the next request */
@@ -90,7 +93,7 @@ func (h *httpStream) runIn() {
 /* httpStreamFactory implements tcpassembly.StreamFactory */
 type httpStreamFactory struct {
 	bidiStreams map[uint64]*bidiStream
-	analyser    *Analyser
+	storage     *Storage
 }
 
 func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
@@ -103,6 +106,7 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 		netFlow:    netFlow,
 		tcpFlow:    tcpFlow,
 		readStream: tcpreader.NewReaderStream(),
+		storage:    h.storage,
 	}
 
 	bds := h.bidiStreams[key]
@@ -110,10 +114,11 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 		log.Println("new stream", key)
 		bds = &bidiStream{in: hstream, key: key}
 		h.bidiStreams[key] = bds
-		h.analyser.newTCPConnection()
 		go hstream.runOut() // Important... we must guarantee that data from the reader stream is read.
 	} else {
 		bds.out = hstream
+		log.Println("netflow: ", bds.in.netFlow)
+		h.storage.newTCPConnection(key, bds.in.netFlow, bds.out.netFlow)
 		go hstream.runIn() // Important... we must guarantee that data from the reader stream is read.
 	}
 
@@ -128,14 +133,15 @@ func main() {
 	handle, err := pcap.OpenLive(*iface, 1600, true, pcap.BlockForever)
 	if err != nil {
 		panic(err)
-	} else if err := handle.SetBPFFilter("tcp and port 443"); err != nil {
+	} else if err := handle.SetBPFFilter("tcp"); err != nil {
 		panic(err)
 	}
 
-	analyser := NewAnalyser()
+	storage, err := NewStorage()
+
 	// Set up assembly
 	streamFactory := &httpStreamFactory{bidiStreams: make(map[uint64]*bidiStream),
-		analyser: analyser}
+		storage: storage}
 	streamPool := tcpassembly.NewStreamPool(streamFactory)
 	assembler := tcpassembly.NewAssembler(streamPool)
 
@@ -143,7 +149,7 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 
-	log.Println("reading in packets")
+	log.Println("reading in packets. Press CTRL-C to end and report.")
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packets := packetSource.Packets()
 
@@ -154,13 +160,13 @@ func main() {
 				log.Println(packet)
 			}
 
-			if analyser.packetInScope(packet) {
+			if storage.packetInScope(packet) {
 				tcp := packet.TransportLayer().(*layers.TCP)
 				assembler.AssembleWithTimestamp(packet.NetworkLayer().NetworkFlow(), tcp,
 					packet.Metadata().Timestamp)
 			}
 		case <-c:
-			analyser.report()
+			storage.report()
 			//			pprof.StopCPUProfile()
 			os.Exit(1)
 		}
