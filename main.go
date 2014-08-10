@@ -129,13 +129,13 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 	bds := h.bidiStreams[key]
 	if bds == nil {
 		log.Println("new stream", key)
-		bds = &BidiStream{in: hstream, key: key}
+		bds = &BidiStream{out: hstream, key: key}
 		h.bidiStreams[key] = bds
 		// Start a coroutine per stream, to ensure that all data is read from
 		// the reader stream
 		go hstream.runOut()
 	} else {
-		bds.out = hstream
+		bds.in = hstream
 		err := h.storage.OpenTCPConnection(key, time.Now())
 		if err != nil {
 			log.Println("Error storing connection", err)
@@ -149,6 +149,39 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 	return &hstream.readStream
 }
 
+func (h *httpStreamFactory) LogPacketSize(packet gopacket.Packet) {
+	netFlow := packet.NetworkLayer().NetworkFlow()
+	tcpFlow := packet.TransportLayer().TransportFlow()
+	key := netFlow.FastHash() ^ tcpFlow.FastHash()
+
+	ipv4Layer := packet.Layer(layers.LayerTypeIPv4)
+	ipv4, _ := ipv4Layer.(*layers.IPv4)
+
+	tcpLayer := packet.Layer(layers.LayerTypeTCP)
+	tcp, _ := tcpLayer.(*layers.TCP)
+
+	bds := h.bidiStreams[key]
+	if bds == nil || bds.in == nil || bds.out == nil {
+		return
+	}
+
+	payloadLength := uint32(ipv4.Length - uint16(ipv4.IHL)*4 - uint16(tcp.DataOffset)*4)
+
+	if bds.in.netFlow == netFlow {
+		/* incoming */
+		err := h.storage.IncomingTCPPacket(key, payloadLength)
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		/* outgoing */
+		err := h.storage.OutgoingTCPPacket(key, payloadLength)
+		if err != nil {
+			panic(err)
+		}
+	}
+}
+
 type Assembler struct {
 	assembler *tcpassembly.Assembler
 }
@@ -157,6 +190,7 @@ func NewAssembler(streamPool *tcpassembly.StreamPool) *Assembler {
 	return &Assembler{tcpassembly.NewAssembler(streamPool)}
 }
 
+/* PFF, a lot of abstractions that make things more difficult then they should be! */
 func (a *Assembler) AssembleWithTimestamp(netFlow gopacket.Flow, t *layers.TCP,
 	timestamp time.Time) {
 	a.assembler.AssembleWithTimestamp(netFlow, t, timestamp)
@@ -204,9 +238,12 @@ func main() {
 			}
 
 			if storage.PacketInScope(packet) {
+				streamFactory.LogPacketSize(packet)
+				netFlow := packet.NetworkLayer().NetworkFlow()
 				tcp := packet.TransportLayer().(*layers.TCP)
-				assembler.AssembleWithTimestamp(packet.NetworkLayer().NetworkFlow(),
-					tcp, packet.Metadata().Timestamp)
+
+				assembler.AssembleWithTimestamp(netFlow, tcp,
+					packet.Metadata().Timestamp)
 			}
 		case <-ctrlc:
 			storage.Report()

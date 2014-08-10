@@ -16,11 +16,13 @@ import (
  */
 
 type Storage struct {
-	c         *sqlite3.Conn
-	insConn   *sqlite3.Stmt
-	closeConn *sqlite3.Stmt
-	insReq    *sqlite3.Stmt
-	insResp   *sqlite3.Stmt
+	c          *sqlite3.Conn
+	insConn    *sqlite3.Stmt
+	closeConn  *sqlite3.Stmt
+	inLenConn  *sqlite3.Stmt
+	outLenConn *sqlite3.Stmt
+	insReq     *sqlite3.Stmt
+	insResp    *sqlite3.Stmt
 }
 
 // constructor
@@ -33,17 +35,30 @@ func NewStorage() (*Storage, error) {
 		return nil, err
 	}
 
-	storage = &Storage{c, nil, nil, nil, nil}
+	storage = &Storage{c: c}
 
 	c.Exec("CREATE TABLE conns(id INTEGER, opentimestamp INTEGER, " +
 		"closetimestamp INTEGER, src_ip TEXT, src_port INTEGER, " +
-		"dst_ip string, dst_port INTEGER)")
-	storage.insConn, err = c.Prepare("INSERT into conns VALUES (?, ?, 0, ?, ?, ?, ?)")
+		"dst_ip string, dst_port INTEGER, inLength INTEGER, outLength INTEGER)")
+
+	/* Create prepared statements */
+	sql := "INSERT into conns VALUES (?, ?, 0, ?, ?, ?, ?, 0, 0)"
+	if storage.insConn, err = c.Prepare(sql); err != nil {
+		return nil, err
+	}
+
+	storage.closeConn, err = c.Prepare("UPDATE conns SET closetimestamp = ? " +
+		"where id = ?")
 	if err != nil {
 		return nil, err
 	}
-	storage.closeConn, err = c.Prepare("UPDATE conns SET closetimestamp = ? " +
-		"where id = ?")
+	storage.inLenConn, err = c.Prepare("UPDATE conns SET inLength = inLength + ? " +
+		"WHERE id = ?")
+	if err != nil {
+		return nil, err
+	}
+	storage.outLenConn, err = c.Prepare("UPDATE conns SET outLength = outLength + ? " +
+		"WHERE id = ?")
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +89,12 @@ func (s *Storage) OpenTCPConnection(connID uint64, timestamp time.Time) error {
 	return s.insConn.Exec(int64(connID), timestamp.UnixNano(), "",
 		2, "", 3)
 }
-
+func (s *Storage) IncomingTCPPacket(connID uint64, payloadLength uint32) error {
+	return s.inLenConn.Exec(int64(payloadLength), int64(connID))
+}
+func (s *Storage) OutgoingTCPPacket(connID uint64, payloadLength uint32) error {
+	return s.outLenConn.Exec(int64(payloadLength), int64(connID))
+}
 func (s *Storage) SentRequest(connID uint64, reqID int64, timestamp time.Time,
 	req *http.Request) error {
 	return s.insReq.Exec(int64(connID), timestamp.UnixNano(), reqID,
@@ -149,6 +169,33 @@ func (s *Storage) avgQueueLength(connID int64) (float64, error) {
 	return avgQueueSize, nil
 }
 
+func (s *Storage) bandwidthUsage(connID int64) (float64, float64, error) {
+	var stmt *sqlite3.Stmt
+	var err error
+
+	/* Not ideal. TODO: track request bandwidth and response bandwidth separately. */
+	var minReqTS, maxRespTS int64
+	sql := "SELECT MIN(reqtimestamp), MAX(resptimestamp) from reqresps WHERE connID=?"
+	if stmt, err = s.c.Query(sql, connID); err != nil {
+		return 0.0, 0.0, err
+	}
+	stmt.Scan(&minReqTS, &maxRespTS)
+	reqTimeRangeNS := maxRespTS - minReqTS
+
+	var inLength, outLength int64
+	sql = "SELECT inLength, outLength from conns WHERE id=?"
+	if stmt, err = s.c.Query(sql, connID); err != nil {
+		return 0.0, 0.0, err
+	}
+	stmt.Scan(&inLength, &outLength)
+
+	var inMiBs, outMiBs float64
+	inMiBs = (float64(inLength) / (1024 * 1024)) / (float64(reqTimeRangeNS) / 1000000000)
+	outMiBs = (float64(outLength) / (1024 * 1024)) / (float64(reqTimeRangeNS) / 1000000000)
+
+	return inMiBs, outMiBs, nil
+}
+
 /* TODO: This function will probably need to move to another layer. */
 func (s *Storage) Report() error {
 	fmt.Println()
@@ -157,7 +204,7 @@ func (s *Storage) Report() error {
 	sql := "SELECT id, opentimestamp FROM conns"
 	i := 0
 
-	fmt.Printf("Conn\t# reqs\t# noresp  avg queue  per method\t\n")
+	fmt.Printf("Conn\t# reqs\t# noresp  avg queue    in MiB/s    out MiB/s  avg queue  per method\t\n")
 	for connstmt, err := s.c.Query(sql); err == nil; err = connstmt.Next() {
 		i++
 
@@ -188,6 +235,14 @@ func (s *Storage) Report() error {
 		}
 		fmt.Printf("%9.1f  ", avgQueueLength)
 
+		var inMiBs, outMiBs float64
+		if inMiBs, outMiBs, err = s.bandwidthUsage(connID); err != nil {
+			return err
+		}
+		fmt.Printf("%4.1f MiB/s  ", inMiBs)
+		fmt.Printf("%4.1f MiB/s  ", outMiBs)
+
+		/* requests per method type */
 		sql = "SELECT method, count(method) FROM reqresps WHERE connID=? GROUP BY method " +
 			" ORDER BY reqtimestamp "
 		for stmt, err = s.c.Query(sql, connID); err == nil; err = stmt.Next() {
