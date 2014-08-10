@@ -13,10 +13,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"time"
 )
 
 /* Command line arguments */
-var iface = flag.String("i", "lo0", "Interface to get packets from")
+var iface = flag.String("i", "en0", "Interface to get packets from")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 
 type interval struct {
@@ -24,23 +25,25 @@ type interval struct {
 	resp *http.Response
 }
 
-type bidiStream struct {
+type BidiStream struct {
 	key     uint64
-	in, out *httpStream
+	in, out *TCPStream
 }
 
-// httpStream will handle the actual decoding of http requests and responses.
-type httpStream struct {
+// TCPStream will handle the actual decoding of http requests and responses.
+type TCPStream struct {
 	netFlow, tcpFlow gopacket.Flow
 	readStream       tcpreader.ReaderStream
 	storage          *Storage
+	bidikey          uint64
 }
 
 /* This reads both HTTP requests and HTTP responses in two separate streams */
-func (h *httpStream) runOut() {
+func (h *TCPStream) runOut() {
 	log.Printf("runOut")
 
 	buf := bufio.NewReader(&h.readStream)
+	var reqID int64
 	for {
 		req, err := http.ReadRequest(buf)
 		if err == io.EOF {
@@ -49,19 +52,25 @@ func (h *httpStream) runOut() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			//			bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
+			bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
 			req.Body.Close()
-			h.storage.sentRequest(req)
-			//			log.Println("Received request from stream", h.netFlow, h.tcpFlow,
-			//				":", req, "with", bodyBytes, "bytes in request body")
+			err = h.storage.sentRequest(h.bidikey, reqID, time.Now(), req)
+			if err != nil {
+				log.Println("Error storing request", err)
+			}
+
+			reqID++
+			log.Println("Received request from stream", h.netFlow, h.tcpFlow,
+				":", req, "with", bodyBytes, "bytes in request body")
 		}
 	}
 }
 
-func (h *httpStream) runIn() {
+func (h *TCPStream) runIn() {
 	log.Printf("runIn")
 
 	buf := bufio.NewReader(&h.readStream)
+	var reqID int64
 	for {
 
 		/* Don't start reading a response if no data is available */
@@ -78,11 +87,15 @@ func (h *httpStream) runIn() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			//			bodyBytes := tcpreader.DiscardBytesToEOF(resp.Body)
+			bodyBytes := tcpreader.DiscardBytesToEOF(resp.Body)
 			resp.Body.Close()
-			h.storage.receivedResponse(resp)
-			//			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
-			//				":", resp, "with", bodyBytes, "bytes in response body")
+			err = h.storage.receivedResponse(h.bidikey, reqID, time.Now(), resp)
+			if err != nil {
+				log.Println("Error storing response", err)
+			}
+			reqID++
+			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
+				":", resp, "with", bodyBytes, "bytes in response body")
 		}
 
 		/* Match the response with the next request */
@@ -92,62 +105,88 @@ func (h *httpStream) runIn() {
 
 /* httpStreamFactory implements tcpassembly.StreamFactory */
 type httpStreamFactory struct {
-	bidiStreams map[uint64]*bidiStream
+	bidiStreams map[uint64]*BidiStream
 	storage     *Storage
 }
 
 func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 
-	/* Can we find out if this is the outgoing or incoming stream? */
 	/* First the outgoing stream, then the incoming stream */
 	key := netFlow.FastHash() ^ tcpFlow.FastHash()
 
-	hstream := &httpStream{
+	hstream := &TCPStream{
 		netFlow:    netFlow,
 		tcpFlow:    tcpFlow,
 		readStream: tcpreader.NewReaderStream(),
 		storage:    h.storage,
+		bidikey:    key,
 	}
 
 	bds := h.bidiStreams[key]
 	if bds == nil {
 		log.Println("new stream", key)
-		bds = &bidiStream{in: hstream, key: key}
+		bds = &BidiStream{in: hstream, key: key}
 		h.bidiStreams[key] = bds
-		go hstream.runOut() // Important... we must guarantee that data from the reader stream is read.
+		// Start a coroutine per stream, to ensure that all data is read from
+		// the reader stream
+		go hstream.runOut()
 	} else {
 		bds.out = hstream
-		log.Println("netflow: ", bds.in.netFlow)
-		h.storage.newTCPConnection(key, bds.in.netFlow, bds.out.netFlow)
-		go hstream.runIn() // Important... we must guarantee that data from the reader stream is read.
+		err := h.storage.newTCPConnection(key)
+		if err != nil {
+			log.Println("Error storing connection", err)
+		}
+		// Start a coroutine per stream, to ensure that all data is read from
+		// the reader stream
+		go hstream.runIn()
 	}
 
 	// ReaderStream implements tcpassembly.Stream, so we can return a pointer to it.
 	return &hstream.readStream
 }
 
+type Assembler struct {
+	assembler *tcpassembly.Assembler
+}
+
+func NewAssembler(streamPool *tcpassembly.StreamPool) *Assembler {
+	return &Assembler{tcpassembly.NewAssembler(streamPool)}
+}
+
+func (a *Assembler) AssembleWithTimestamp(netFlow gopacket.Flow, t *layers.TCP,
+	timestamp time.Time) {
+	a.assembler.AssembleWithTimestamp(netFlow, t, timestamp)
+}
+
 func main() {
 	flag.Parse()
+	log.SetFlags(log.Ltime | log.Lmicroseconds)
+
 	log.Printf("starting capture on interface %q", *iface)
 
+	// Setup packet capture
 	handle, err := pcap.OpenLive(*iface, 1600, true, pcap.BlockForever)
 	if err != nil {
 		panic(err)
-	} else if err := handle.SetBPFFilter("tcp"); err != nil {
+	} else if err := handle.SetBPFFilter("tcp and port 80"); err != nil {
 		panic(err)
 	}
 
+	// Set up storage layer
 	storage, err := NewStorage()
+	if err != nil {
+		panic(err)
+	}
 
 	// Set up assembly
-	streamFactory := &httpStreamFactory{bidiStreams: make(map[uint64]*bidiStream),
+	streamFactory := &httpStreamFactory{bidiStreams: make(map[uint64]*BidiStream),
 		storage: storage}
 	streamPool := tcpassembly.NewStreamPool(streamFactory)
-	assembler := tcpassembly.NewAssembler(streamPool)
+	assembler := NewAssembler(streamPool)
 
 	// Setup CTRL-C handler
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+	ctrlc := make(chan os.Signal, 1)
+	signal.Notify(ctrlc, os.Interrupt)
 
 	log.Println("reading in packets. Press CTRL-C to end and report.")
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
@@ -162,10 +201,10 @@ func main() {
 
 			if storage.packetInScope(packet) {
 				tcp := packet.TransportLayer().(*layers.TCP)
-				assembler.AssembleWithTimestamp(packet.NetworkLayer().NetworkFlow(), tcp,
-					packet.Metadata().Timestamp)
+				assembler.AssembleWithTimestamp(packet.NetworkLayer().NetworkFlow(),
+					tcp, packet.Metadata().Timestamp)
 			}
-		case <-c:
+		case <-ctrlc:
 			storage.report()
 			//			pprof.StopCPUProfile()
 			os.Exit(1)
