@@ -120,6 +120,11 @@ func (s *Storage) arrivalRate(connID int64) (float64, error) {
 	stmt.Scan(&minReqTS, &maxReqTS)
 	reqTimeRangeNS := maxReqTS - minReqTS
 
+	/* If there was only one request, set the arrival rate to 0. */
+	if reqTimeRangeNS == 0 {
+		return 0.0, nil
+	}
+
 	arrivalRatePerNS := float64(nrOfRequests) / float64(reqTimeRangeNS)
 	return arrivalRatePerNS, nil
 }
@@ -134,7 +139,7 @@ func (s *Storage) avgQueueLength(connID int64) (float64, error) {
 		return 0.0, err
 	}
 
-	/* Arrivage waiting time */
+	/* Average waiting time */
 	var avgWaitingTimeNS float64
 	if avgWaitingTimeNS, err = s.avgWaitingTime(connID); err != nil {
 		return 0.0, err
