@@ -8,6 +8,7 @@ import (
 	"code.google.com/p/gopacket/tcpassembly"
 	"code.google.com/p/gopacket/tcpassembly/tcpreader"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -52,16 +53,17 @@ func (h *TCPStream) runOut() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
+			// bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
 			req.Body.Close()
-			err = h.storage.sentRequest(h.bidikey, reqID, time.Now(), req)
+			err = h.storage.SentRequest(h.bidikey, reqID, time.Now(), req)
 			if err != nil {
 				log.Println("Error storing request", err)
 			}
 
 			reqID++
-			log.Println("Received request from stream", h.netFlow, h.tcpFlow,
-				":", req, "with", bodyBytes, "bytes in request body")
+			fmt.Print(".")
+			// log.Println("Received request from stream", h.netFlow, h.tcpFlow,
+			// 	":", req, "with", bodyBytes, "bytes in request body")
 		}
 	}
 }
@@ -87,15 +89,17 @@ func (h *TCPStream) runIn() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			bodyBytes := tcpreader.DiscardBytesToEOF(resp.Body)
+			//			bodyBytes := tcpreader.DiscardBytesToEOF(resp.Body)
 			resp.Body.Close()
-			err = h.storage.receivedResponse(h.bidikey, reqID, time.Now(), resp)
+			err = h.storage.ReceivedResponse(h.bidikey, reqID, time.Now(), resp)
 			if err != nil {
 				log.Println("Error storing response", err)
 			}
 			reqID++
-			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
-				":", resp, "with", bodyBytes, "bytes in response body")
+			fmt.Print(".")
+
+			//			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
+			//				":", resp, "with", bodyBytes, "bytes in response body")
 		}
 
 		/* Match the response with the next request */
@@ -132,7 +136,7 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 		go hstream.runOut()
 	} else {
 		bds.out = hstream
-		err := h.storage.newTCPConnection(key)
+		err := h.storage.OpenTCPConnection(key, time.Now())
 		if err != nil {
 			log.Println("Error storing connection", err)
 		}
@@ -199,13 +203,13 @@ func main() {
 				log.Println(packet)
 			}
 
-			if storage.packetInScope(packet) {
+			if storage.PacketInScope(packet) {
 				tcp := packet.TransportLayer().(*layers.TCP)
 				assembler.AssembleWithTimestamp(packet.NetworkLayer().NetworkFlow(),
 					tcp, packet.Metadata().Timestamp)
 			}
 		case <-ctrlc:
-			storage.report()
+			storage.Report()
 			//			pprof.StopCPUProfile()
 			os.Exit(1)
 		}
