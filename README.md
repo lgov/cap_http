@@ -1,4 +1,14 @@
-cap_http
-========
+Traffic Monitor (trmon)
+=======================
 
-A test project to capture and analyze HTTP traffic, written in Go.
+A tool to capture and analyse all traffic of an application.
+
+Installation
+------------
+Requirements: go, libpcap
+
+Build with:
+    $ go build main.go storage.go
+
+Run with:
+    $ ./main
