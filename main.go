@@ -13,13 +13,16 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"time"
 )
 
 /* Command line arguments */
 var iface = flag.String("i", "en0", "Interface to get packets from")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
+var launchCmd = flag.String("e", "", "Launches the command and logs its traffic")
 
 type interval struct {
 	req  *http.Request
@@ -226,12 +229,40 @@ func main() {
 	ctrlc := make(chan os.Signal, 1)
 	signal.Notify(ctrlc, os.Interrupt)
 
+	pid := uint32(0)
+	var cmd_done chan error
+	if *launchCmd != "" {
+		s := *launchCmd
+		//		n := strings.Index(*launchCmd, " ")
+		//		fmt.Println("Launching ", s[0:n], " --- ", s[n:])
+		//		cmd := exec.Command(s[0:n], strings.Split(s[n:], " "))
+		args := strings.Split(s, " ")
+		cmd := exec.Command(args[0], args[1:]...)
+		err := cmd.Start()
+		if err != nil {
+			panic(err)
+		}
+		cmd_done = make(chan error, 1)
+		go func() {
+			cmd_done <- cmd.Wait()
+		}()
+		pid = uint32(cmd.Process.Pid)
+		fmt.Println("PID: ", cmd.Process.Pid)
+	}
+
+	netDescSource := NewOSXNetDescSource()
+	descriptors := netDescSource.Descriptors()
+
 	log.Println("reading in packets. Press CTRL-C to end and report.")
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packets := packetSource.Packets()
 
 	for {
 		select {
+		case netDesc := <-descriptors:
+			if netDesc.Pid == pid {
+				fmt.Println("event received ", netDesc)
+			}
 		case packet := <-packets:
 			if *logAllPackets {
 				log.Println(packet)
@@ -245,10 +276,17 @@ func main() {
 				assembler.AssembleWithTimestamp(netFlow, tcp,
 					packet.Metadata().Timestamp)
 			}
+		case err := <-cmd_done:
+			if err != nil {
+				log.Printf("process done with error = %v", err)
+			}
+			storage.Report()
+			os.Exit(0)
+
 		case <-ctrlc:
 			storage.Report()
 			//			pprof.StopCPUProfile()
-			os.Exit(1)
+			os.Exit(0)
 		}
 	}
 }
