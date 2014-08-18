@@ -95,7 +95,6 @@ func (h *TCPStream) runIn() {
 			return
 		}
 		/* Data available, read response */
-		log.Println("Reading response.")
 		resp, err := http.ReadResponse(buf, nil) // TODO: request
 		if err == io.EOF {
 			// We must read until we see an EOF... very important!
@@ -104,8 +103,8 @@ func (h *TCPStream) runIn() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			bodyBytes, err := tcpreader.DiscardBytesToFirstError(resp.Body)
-			if err != nil {
+			_, err := tcpreader.DiscardBytesToFirstError(resp.Body)
+			if err != nil && err != io.EOF {
 				log.Println(err)
 			}
 			resp.Body.Close()
@@ -299,7 +298,7 @@ func main() {
 			}
 
 			if storage.PacketInScope(packet) {
-				//				streamFactory.LogPacketSize(packet)
+				streamFactory.LogPacketSize(packet)
 				netFlow := packet.NetworkLayer().NetworkFlow()
 				tcp := packet.TransportLayer().(*layers.TCP)
 
