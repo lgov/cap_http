@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	//	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -44,8 +45,6 @@ type TCPStream struct {
 
 /* This reads both HTTP requests and HTTP responses in two separate streams */
 func (h *TCPStream) runOut() {
-	log.Printf("runOut")
-
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
 	for {
@@ -64,7 +63,7 @@ func (h *TCPStream) runOut() {
 			}
 
 			reqID++
-			fmt.Print(".")
+			//			fmt.Print(".")
 			// log.Println("Received request from stream", h.netFlow, h.tcpFlow,
 			// 	":", req, "with", bodyBytes, "bytes in request body")
 		}
@@ -72,8 +71,6 @@ func (h *TCPStream) runOut() {
 }
 
 func (h *TCPStream) runIn() {
-	log.Printf("runIn")
-
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
 	for {
@@ -99,8 +96,7 @@ func (h *TCPStream) runIn() {
 				log.Println("Error storing response", err)
 			}
 			reqID++
-			fmt.Print(".")
-
+			// fmt.Print(".")
 			//			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
 			//				":", resp, "with", bodyBytes, "bytes in response body")
 		}
@@ -131,7 +127,7 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 
 	bds := h.bidiStreams[key]
 	if bds == nil {
-		log.Println("new stream", key)
+		log.Println("reading stream", netFlow, tcpFlow)
 		bds = &BidiStream{out: hstream, key: key}
 		h.bidiStreams[key] = bds
 		// Start a coroutine per stream, to ensure that all data is read from
@@ -202,6 +198,7 @@ func (a *Assembler) AssembleWithTimestamp(netFlow gopacket.Flow, t *layers.TCP,
 func main() {
 	flag.Parse()
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
+	//	log.SetOutput(ioutil.Discard)
 
 	log.Printf("starting capture on interface %q", *iface)
 
@@ -231,6 +228,7 @@ func main() {
 
 	pid := uint32(0)
 	var cmd_done chan error
+	var start_time time.Time
 	if *launchCmd != "" {
 		s := *launchCmd
 		//		n := strings.Index(*launchCmd, " ")
@@ -238,6 +236,7 @@ func main() {
 		//		cmd := exec.Command(s[0:n], strings.Split(s[n:], " "))
 		args := strings.Split(s, " ")
 		cmd := exec.Command(args[0], args[1:]...)
+		start_time = time.Now()
 		err := cmd.Start()
 		if err != nil {
 			panic(err)
@@ -278,8 +277,9 @@ func main() {
 			}
 		case err := <-cmd_done:
 			if err != nil {
-				log.Printf("process done with error = %v", err)
+				log.Printf("process done with error = %v\n", err)
 			}
+			log.Println("Process took: ", time.Now().Sub(start_time))
 			storage.Report()
 			os.Exit(0)
 

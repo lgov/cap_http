@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"github.com/aschepis/kernctl"
 	"io"
-	"io/ioutil"
 	"log"
+	"net"
 )
 
 const (
@@ -117,7 +117,7 @@ func addAllSources(conn *kernctl.Conn, provider uint32) {
 		},
 		Provider: provider,
 	}
-	log.Println("addAllSources", provider)
+	//	log.Println("addAllSources", provider)
 	conn.SendCommand(aasreq)
 }
 
@@ -129,7 +129,7 @@ func getSrcDescription(conn *kernctl.Conn, srcRef uint32) {
 		},
 		SrcRef: srcRef,
 	}
-	log.Println("getSrcDescription", srcRef)
+	//	log.Println("getSrcDescription", srcRef)
 	conn.SendCommand(qsreq)
 }
 
@@ -308,23 +308,22 @@ func readTCPDescriptor(msg nstat_msg_src_description,
 		log.Println("binary.Read TCPDescriptor failed:", err)
 		return nil, err
 	}
-	log.Println("tcp descriptor received:", tcpDesc)
+	/*
+		switch tcpDesc.Family() {
+		case AF_INET:
+			var laddr, raddr sockaddr_in4
+			if laddr, err = tcpDesc.Local4(); err != nil {
+				break
+			}
+			if raddr, err = tcpDesc.Remote4(); err != nil {
+				break
+			}
 
-	switch tcpDesc.Family() {
-	case AF_INET:
-		var laddr, raddr sockaddr_in4
-		if laddr, err = tcpDesc.Local4(); err != nil {
+			log.Println("local: ", laddr, " remote: ", raddr)
+		case AF_INET6:
 			break
 		}
-		if raddr, err = tcpDesc.Remote4(); err != nil {
-			break
-		}
-
-		log.Println("local: ", laddr, " remote: ", raddr)
-	case AF_INET6:
-		break
-	}
-
+	*/
 	return &tcpDesc, err
 }
 
@@ -343,7 +342,6 @@ func (s *OSXNetDescSource) ProcessNStatMsg(conn *kernctl.Conn,
 			log.Println("binary.Read SRC_ADDED failed:", err)
 			break
 		}
-		log.Println("new source: ", msg)
 		descriptors[msg.SrcRef] = &Descriptor{}
 		/* New source added, now get its details */
 		getSrcDescription(conn, msg.SrcRef)
@@ -356,7 +354,6 @@ func (s *OSXNetDescSource) ProcessNStatMsg(conn *kernctl.Conn,
 			log.Println("binary.Read SRC_REMOVED failed:", err)
 			break
 		}
-		log.Println("source removed: ", msg)
 		delete(descriptors, msg.SrcRef)
 
 	case NSTAT_MSG_TYPE_SRC_DESC:
@@ -369,17 +366,34 @@ func (s *OSXNetDescSource) ProcessNStatMsg(conn *kernctl.Conn,
 		}
 		switch msg.Provider {
 		case NSTAT_PROVIDER_TCP:
-			log.Println("buf: ", buf)
 			var tcpDesc *nstat_tcp_descriptor
-			tcpDesc, err = readTCPDescriptor(msg, reader)
-			descriptors[msg.SrcRef].TCPDesc = tcpDesc
-			log.Println("TCP descriptor received: ", msg)
-			netDesc := &NetDescriptor{Pid: tcpDesc.Pid}
-			s.channel <- *netDesc
+			if tcpDesc, err = readTCPDescriptor(msg, reader); err != nil {
+				break
+			} else if laddr, err := tcpDesc.Local4(); err != nil {
+				break
+			} else if raddr, err := tcpDesc.Remote4(); err != nil {
+				break
+			} else {
+				descriptors[msg.SrcRef].TCPDesc = tcpDesc
+				//          log.Println("TCP descriptor received: ", msg)
+				netDesc := &NetDescriptor{
+					Pid: tcpDesc.Pid,
+					LocalIPv4Addr: net.TCPAddr{
+						IP: net.IPv4(laddr.Sin_addr[0], laddr.Sin_addr[1],
+							laddr.Sin_addr[2], laddr.Sin_addr[3]),
+						Port: int(laddr.Sin_port),
+					},
+					RemoteIPv4Addr: net.TCPAddr{
+						IP: net.IPv4(raddr.Sin_addr[0], raddr.Sin_addr[1],
+							raddr.Sin_addr[2], raddr.Sin_addr[3]),
+						Port: int(raddr.Sin_port),
+					}}
+				s.channel <- *netDesc
+			}
 		case NSTAT_PROVIDER_UDP:
-			log.Println("UDP descriptor received: ", msg)
+			//log.Println("UDP descriptor received: ", msg)
 		}
-		log.Println("description received: ", msg)
+		//		log.Println("description received: ", msg)
 	}
 	return err
 }
@@ -392,7 +406,9 @@ const (
 )
 
 type NetDescriptor struct {
-	Pid uint32
+	Pid            uint32
+	LocalIPv4Addr  net.TCPAddr
+	RemoteIPv4Addr net.TCPAddr
 }
 
 type OSXNetDescSource struct {
@@ -418,8 +434,6 @@ func (s *OSXNetDescSource) ListenForEvents() {
 	if err := conn.Connect(); err != nil {
 		panic(err)
 	}
-
-	log.SetOutput(ioutil.Discard)
 
 	descriptors = make(map[uint32]*Descriptor)
 
@@ -452,14 +466,13 @@ func (s *OSXNetDescSource) ListenForEvents() {
 				//              break
 				continue
 			}
-			log.Println("msg_hdr recvd:", msg_hdr)
+			//			log.Println("msg_hdr recvd:", msg_hdr)
 
 			switch msg_hdr.HType {
 			case NSTAT_MSG_TYPE_SUCCESS:
 				{
 					/* Previous requested action was successful, go to next. */
 					state++
-					log.Println("state: ", state, "success context ", msg_hdr.Context)
 				}
 			case NSTAT_MSG_TYPE_SRC_ADDED, NSTAT_MSG_TYPE_SRC_REMOVED,
 				NSTAT_MSG_TYPE_SRC_DESC, NSTAT_MSG_TYPE_SRC_COUNTS:
@@ -470,7 +483,7 @@ func (s *OSXNetDescSource) ListenForEvents() {
 					}
 				}
 			case NSTAT_MSG_TYPE_ERROR:
-				log.Println("error")
+				//				log.Println("error")
 			}
 		}
 	}

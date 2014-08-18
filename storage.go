@@ -140,7 +140,7 @@ func (s *Storage) arrivalRate(connID int64) (float64, error) {
 	stmt.Scan(&minReqTS, &maxReqTS)
 	reqTimeRangeNS := maxReqTS - minReqTS
 
-	/* If there was only one request, set the arrival rate to 0. */
+	/* If there was no or only one request, set the arrival rate to 0.0 . */
 	if reqTimeRangeNS == 0 {
 		return 0.0, nil
 	}
@@ -169,6 +169,18 @@ func (s *Storage) avgQueueLength(connID int64) (float64, error) {
 	return avgQueueSize, nil
 }
 
+func (s *Storage) payloadLength(connID int64) (int64, int64, error) {
+	var stmt *sqlite3.Stmt
+	var err error
+	var inLength, outLength int64
+	sql := "SELECT inLength, outLength from conns WHERE id=?"
+	if stmt, err = s.c.Query(sql, connID); err != nil {
+		return 0, 0, err
+	}
+	stmt.Scan(&inLength, &outLength)
+	return inLength, outLength, nil
+}
+
 func (s *Storage) bandwidthUsage(connID int64) (float64, float64, error) {
 	var stmt *sqlite3.Stmt
 	var err error
@@ -182,12 +194,15 @@ func (s *Storage) bandwidthUsage(connID int64) (float64, float64, error) {
 	stmt.Scan(&minReqTS, &maxRespTS)
 	reqTimeRangeNS := maxRespTS - minReqTS
 
+	/* If there was no or only one request, set the arrival rate to 0.0 . */
+	if reqTimeRangeNS == 0 {
+		return 0.0, 0.0, nil
+	}
+
 	var inLength, outLength int64
-	sql = "SELECT inLength, outLength from conns WHERE id=?"
-	if stmt, err = s.c.Query(sql, connID); err != nil {
+	if inLength, outLength, err = s.payloadLength(connID); err != nil {
 		return 0.0, 0.0, err
 	}
-	stmt.Scan(&inLength, &outLength)
 
 	var inMiBs, outMiBs float64
 	inMiBs = (float64(inLength) / (1024 * 1024)) / (float64(reqTimeRangeNS) / 1000000000)
@@ -204,7 +219,7 @@ func (s *Storage) Report() error {
 	sql := "SELECT id, opentimestamp FROM conns"
 	i := 0
 
-	fmt.Printf("Conn\t# reqs\t# noresp  avg queue    in MiB/s    out MiB/s  avg queue  per method\t\n")
+	fmt.Printf("Conn\t# reqs\t# noresp  avg queue  in MiB  out MiB  in MiB/s   out MiB/s  per method\t\n")
 	for connstmt, err := s.c.Query(sql); err == nil; err = connstmt.Next() {
 		i++
 
@@ -233,14 +248,22 @@ func (s *Storage) Report() error {
 		if avgQueueLength, err = s.avgQueueLength(connID); err != nil {
 			return err
 		}
-		fmt.Printf("%9.1f  ", avgQueueLength)
+		fmt.Printf("%9.1f ", avgQueueLength)
+
+		var inLength, outLength int64
+		if inLength, outLength, err = s.payloadLength(connID); err != nil {
+			return err
+		}
+
+		fmt.Printf("%7.1f  ", (float64(inLength) / (1024 * 1024)))
+		fmt.Printf("%7.1f      ", (float64(outLength) / (1024 * 1024)))
 
 		var inMiBs, outMiBs float64
 		if inMiBs, outMiBs, err = s.bandwidthUsage(connID); err != nil {
 			return err
 		}
-		fmt.Printf("%4.1f MiB/s  ", inMiBs)
-		fmt.Printf("%4.1f MiB/s  ", outMiBs)
+		fmt.Printf("%4.1f        ", inMiBs)
+		fmt.Printf("%4.1f  ", outMiBs)
 
 		/* requests per method type */
 		sql = "SELECT method, count(method) FROM reqresps WHERE connID=? GROUP BY method " +
