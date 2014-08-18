@@ -1,3 +1,17 @@
+// Copyright 2014 Lieven Govaerts. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -81,6 +95,7 @@ func (h *TCPStream) runIn() {
 			return
 		}
 		/* Data available, read response */
+		log.Println("Reading response.")
 		resp, err := http.ReadResponse(buf, nil) // TODO: request
 		if err == io.EOF {
 			// We must read until we see an EOF... very important!
@@ -89,7 +104,10 @@ func (h *TCPStream) runIn() {
 		} else if err != nil {
 			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
 		} else {
-			//			bodyBytes := tcpreader.DiscardBytesToEOF(resp.Body)
+			bodyBytes, err := tcpreader.DiscardBytesToFirstError(resp.Body)
+			if err != nil {
+				log.Println(err)
+			}
 			resp.Body.Close()
 			err = h.storage.ReceivedResponse(h.bidikey, reqID, time.Now(), resp)
 			if err != nil {
@@ -97,8 +115,8 @@ func (h *TCPStream) runIn() {
 			}
 			reqID++
 			// fmt.Print(".")
-			//			log.Println("Received response from stream", h.netFlow, h.tcpFlow,
-			//				":", resp, "with", bodyBytes, "bytes in response body")
+			//log.Println("Received response from stream", h.netFlow, h.tcpFlow,
+			//	":", resp, "with", bodyBytes, "bytes in response body")
 		}
 
 		/* Match the response with the next request */
@@ -195,6 +213,17 @@ func (a *Assembler) AssembleWithTimestamp(netFlow gopacket.Flow, t *layers.TCP,
 	a.assembler.AssembleWithTimestamp(netFlow, t, timestamp)
 }
 
+/* Wait for a couple of seconds, just enough to get the events handled by the
+   main function. */
+func wait_for_responses_to_arrive() (timeout chan bool) {
+	timeout = make(chan bool, 1)
+	go func() {
+		time.Sleep(2 * time.Second)
+		timeout <- true
+	}()
+	return timeout
+}
+
 func main() {
 	flag.Parse()
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
@@ -256,6 +285,8 @@ func main() {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packets := packetSource.Packets()
 
+	var timeout chan bool
+
 	for {
 		select {
 		case netDesc := <-descriptors:
@@ -268,7 +299,7 @@ func main() {
 			}
 
 			if storage.PacketInScope(packet) {
-				streamFactory.LogPacketSize(packet)
+				//				streamFactory.LogPacketSize(packet)
 				netFlow := packet.NetworkLayer().NetworkFlow()
 				tcp := packet.TransportLayer().(*layers.TCP)
 
@@ -280,12 +311,19 @@ func main() {
 				log.Printf("process done with error = %v\n", err)
 			}
 			log.Println("Process took: ", time.Now().Sub(start_time))
-			storage.Report()
-			os.Exit(0)
+
+			log.Println("Waiting for the remaining responses to arrive.")
+
+			/* Wait a couple of seconds here */
+			timeout = wait_for_responses_to_arrive()
 
 		case <-ctrlc:
 			storage.Report()
 			//			pprof.StopCPUProfile()
+			os.Exit(0)
+
+		case <-timeout:
+			storage.Report()
 			os.Exit(0)
 		}
 	}
