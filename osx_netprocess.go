@@ -462,9 +462,10 @@ func (s *OSXNetDescSource) ListenForEvents() {
 			reader := bytes.NewReader(buf)
 			err := binary.Read(reader, binary.LittleEndian, &msg_hdr)
 			if err != nil {
+				if err == io.EOF {
+					continue
+				}
 				log.Println("binary.Read failed:", err)
-				//              break
-				continue
 			}
 			//			log.Println("msg_hdr recvd:", msg_hdr)
 
