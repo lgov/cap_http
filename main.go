@@ -317,7 +317,10 @@ func main() {
 			timeout = wait_for_responses_to_arrive()
 
 		case <-ctrlc:
-			storage.Report()
+			if err := storage.Report(); err != nil {
+				log.Println(err)
+			}
+
 			//			pprof.StopCPUProfile()
 			os.Exit(0)
 
