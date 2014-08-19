@@ -1,3 +1,17 @@
+// Copyright 2014 Lieven Govaerts. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -132,13 +146,12 @@ func (s *Storage) arrivalRate(connID int64) (float64, error) {
 	}
 	stmt.Scan(&nrOfRequests)
 
-	var minReqTS, maxReqTS int64
-	sql = "SELECT MIN(reqtimestamp), MAX(reqtimestamp) from reqresps WHERE connID=?"
+	var reqTimeRangeNS int64
+	sql = "SELECT MAX(reqtimestamp) - MIN(reqtimestamp) from reqresps WHERE connID=?"
 	if stmt, err = s.c.Query(sql, connID); err != nil {
 		return 0.0, err
 	}
-	stmt.Scan(&minReqTS, &maxReqTS)
-	reqTimeRangeNS := maxReqTS - minReqTS
+	stmt.Scan(&reqTimeRangeNS)
 
 	/* If there was no or only one request, set the arrival rate to 0.0 . */
 	if reqTimeRangeNS == 0 {
@@ -154,14 +167,14 @@ func (s *Storage) avgQueueLength(connID int64) (float64, error) {
 	var err error
 
 	/* Arrival rate */
-	var arrivalRatePerNS float64
-	if arrivalRatePerNS, err = s.arrivalRate(connID); err != nil {
+	arrivalRatePerNS, err := s.arrivalRate(connID)
+	if err != nil {
 		return 0.0, err
 	}
 
 	/* Average waiting time */
-	var avgWaitingTimeNS float64
-	if avgWaitingTimeNS, err = s.avgWaitingTime(connID); err != nil {
+	avgWaitingTimeNS, err := s.avgWaitingTime(connID)
+	if err != nil {
 		return 0.0, err
 	}
 
@@ -170,56 +183,56 @@ func (s *Storage) avgQueueLength(connID int64) (float64, error) {
 }
 
 func (s *Storage) payloadLength(connID int64) (int64, int64, error) {
-	var stmt *sqlite3.Stmt
-	var err error
+
 	var inLength, outLength int64
+
 	sql := "SELECT inLength, outLength from conns WHERE id=?"
-	if stmt, err = s.c.Query(sql, connID); err != nil {
+	stmt, err := s.c.Query(sql, connID)
+	if err != nil {
 		return 0, 0, err
 	}
+
 	stmt.Scan(&inLength, &outLength)
+
 	return inLength, outLength, nil
 }
 
-func (s *Storage) bandwidthUsage(connID int64) (float64, float64, error) {
-	var stmt *sqlite3.Stmt
-	var err error
+func (s *Storage) bandwidthUsage(connID int64) (inByteS float64, outByteS float64, err error) {
 
 	/* Not ideal. TODO: track request bandwidth and response bandwidth separately. */
-	var minReqTS, maxRespTS int64
-	sql := "SELECT MIN(reqtimestamp), MAX(resptimestamp) from reqresps WHERE connID=?"
-	if stmt, err = s.c.Query(sql, connID); err != nil {
+	var reqTimeRangeNS int64
+
+	sql := "SELECT MAX(resptimestamp) - MIN(reqtimestamp) from reqresps WHERE connID=?"
+	stmt, err := s.c.Query(sql, connID)
+	if err != nil {
 		return 0.0, 0.0, err
 	}
-	stmt.Scan(&minReqTS, &maxRespTS)
-	reqTimeRangeNS := maxRespTS - minReqTS
+	stmt.Scan(&reqTimeRangeNS)
 
 	/* If there was no or only one request, set the arrival rate to 0.0 . */
 	if reqTimeRangeNS == 0 {
 		return 0.0, 0.0, nil
 	}
 
-	var inLength, outLength int64
-	if inLength, outLength, err = s.payloadLength(connID); err != nil {
+	inLength, outLength, err := s.payloadLength(connID)
+	if err != nil {
 		return 0.0, 0.0, err
 	}
 
-	var inMiBs, outMiBs float64
-	inMiBs = (float64(inLength) / (1024 * 1024)) / (float64(reqTimeRangeNS) / 1000000000)
-	outMiBs = (float64(outLength) / (1024 * 1024)) / (float64(reqTimeRangeNS) / 1000000000)
+	inByteS = float64(inLength) / (float64(reqTimeRangeNS) / (1000 * 1000 * 1000))
+	outByteS = float64(outLength) / (float64(reqTimeRangeNS) / 1000000000)
 
-	return inMiBs, outMiBs, nil
+	return inByteS, outByteS, nil
 }
 
 /* TODO: This function will probably need to move to another layer. */
-func (s *Storage) Report() error {
+func (s *Storage) ReportConnSummary() error {
 	fmt.Println()
 
-	var stmt *sqlite3.Stmt
 	sql := "SELECT id, opentimestamp FROM conns"
 	i := 0
 
-	fmt.Printf("Conn\t# reqs\t# noresp  avg queue  in MiB  out MiB  in MiB/s   out MiB/s  per method\t\n")
+	fmt.Printf("Conn\t# reqs\t# noresp  avg queue  in MiB  out MiB  in KiB/s   out KiB/s  per method\t\n")
 	for connstmt, err := s.c.Query(sql); err == nil; err = connstmt.Next() {
 		i++
 
@@ -228,9 +241,11 @@ func (s *Storage) Report() error {
 		connstmt.Scan(&connID, &nsec)
 
 		fmt.Printf("%4d\t", i)
+
 		var nrOfRequests int64
-		sql = "SELECT count(*) FROM reqresps WHERE connID=?"
-		if stmt, err = s.c.Query(sql, connID); err != nil {
+		sql := "SELECT count(*) FROM reqresps WHERE connID=?"
+		stmt, err := s.c.Query(sql, connID)
+		if err != nil {
 			return err
 		}
 		stmt.Scan(&nrOfRequests)
@@ -238,37 +253,37 @@ func (s *Storage) Report() error {
 
 		var nrOfRequestsNoResp int64
 		sql = "SELECT count(*) FROM reqresps where status = 0 AND connID=?"
-		if stmt, err = s.c.Query(sql, connID); err != nil {
+		stmt, err = s.c.Query(sql, connID)
+		if err != nil {
 			return err
 		}
 		stmt.Scan(&nrOfRequestsNoResp)
 		fmt.Printf("%8d  ", nrOfRequestsNoResp)
 
-		var avgQueueLength float64
-		if avgQueueLength, err = s.avgQueueLength(connID); err != nil {
+		avgQueueLength, err := s.avgQueueLength(connID)
+		if err != nil {
 			return err
 		}
 		fmt.Printf("%9.1f ", avgQueueLength)
 
-		var inLength, outLength int64
-		if inLength, outLength, err = s.payloadLength(connID); err != nil {
+		inLength, outLength, err := s.payloadLength(connID)
+		if err != nil {
 			return err
 		}
+		fmt.Printf("%7.2f  ", (float64(inLength) / (1024 * 1024)))
+		fmt.Printf("%7.2f      ", (float64(outLength) / (1024 * 1024)))
 
-		fmt.Printf("%7.1f  ", (float64(inLength) / (1024 * 1024)))
-		fmt.Printf("%7.1f      ", (float64(outLength) / (1024 * 1024)))
-
-		var inMiBs, outMiBs float64
-		if inMiBs, outMiBs, err = s.bandwidthUsage(connID); err != nil {
+		inByteS, outByteS, err := s.bandwidthUsage(connID)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("%4.1f        ", inMiBs)
-		fmt.Printf("%4.1f  ", outMiBs)
+		fmt.Printf("%4.2f        ", inByteS/1024)
+		fmt.Printf("%4.2f  ", outByteS/1024)
 
 		/* requests per method type */
 		sql = "SELECT method, count(method) FROM reqresps WHERE connID=? GROUP BY method " +
 			" ORDER BY reqtimestamp "
-		for stmt, err = s.c.Query(sql, connID); err == nil; err = stmt.Next() {
+		for stmt, err := s.c.Query(sql, connID); err == nil; err = stmt.Next() {
 			var method string
 			var nrOfRequestsPerMethod int64
 			stmt.Scan(&method, &nrOfRequestsPerMethod)
@@ -279,6 +294,124 @@ func (s *Storage) Report() error {
 	}
 
 	/* Average response time for each request */
-	sql = "SELECT "
+
+	return nil
+}
+
+func (s *Storage) ReportReqsChart() error {
+	fmt.Println()
+
+	fmt.Println("Requests per second")
+
+	var minReqTS, maxReqTS int64
+	sql := "SELECT MIN(reqtimestamp / 1000000000), MAX(reqtimestamp / 1000000000) " +
+		" FROM reqresps"
+	stmt, err := s.c.Query(sql)
+	if err != nil {
+		return err
+	}
+	stmt.Scan(&minReqTS, &maxReqTS)
+
+	fmt.Printf("Conn\t")
+	for i := minReqTS; i <= maxReqTS; i++ {
+		fmt.Printf("%3d", i-minReqTS+1)
+	}
+	fmt.Println()
+
+	sql = "SELECT id FROM conns"
+	connnr := 0
+	for connstmt, err := s.c.Query(sql); err == nil; err = connstmt.Next() {
+		var connID int64
+		connstmt.Scan(&connID)
+
+		connnr++
+		fmt.Printf("%4d\t", connnr)
+
+		sql = "SELECT reqtimestamp / 1000000000, COUNT(reqtimestamp/1000000000) " +
+			"FROM reqresps WHERE connID=? GROUP BY (reqtimestamp/1000000000) " +
+			"ORDER BY reqtimestamp"
+
+		i := minReqTS
+		for tsstmt, err := s.c.Query(sql, connID); err == nil; err = tsstmt.Next() {
+			var reqsTS, reqCount int64
+			tsstmt.Scan(&reqsTS, &reqCount)
+
+			for ; i < reqsTS; i++ {
+				fmt.Printf("   ")
+			}
+			fmt.Printf("%3d", reqCount)
+			i++
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func (s *Storage) ReportRespsChart() error {
+	fmt.Println()
+
+	fmt.Println("Responses per second")
+
+	var minReqTS, maxRespTS int64
+	// Start counting from when the first request was sent, so the report is
+	// lined out with the request report.
+	sql := "SELECT MIN(reqtimestamp / 1000000000), MAX(resptimestamp / 1000000000) " +
+		" FROM reqresps"
+	stmt, err := s.c.Query(sql)
+	if err != nil {
+		return err
+	}
+	stmt.Scan(&minReqTS, &maxRespTS)
+
+	fmt.Printf("Conn\t")
+	for i := minReqTS; i <= maxRespTS; i++ {
+		fmt.Printf("%3d", i-minReqTS+1)
+	}
+	fmt.Println()
+
+	sql = "SELECT id FROM conns"
+	connnr := 0
+	for connstmt, err := s.c.Query(sql); err == nil; err = connstmt.Next() {
+		var connID int64
+		connstmt.Scan(&connID)
+
+		connnr++
+		fmt.Printf("%4d\t", connnr)
+
+		sql = "SELECT resptimestamp / 1000000000, COUNT(resptimestamp/1000000000) " +
+			"FROM reqresps WHERE connID=? GROUP BY (resptimestamp/1000000000) " +
+			"ORDER BY resptimestamp"
+
+		i := minReqTS
+		for tsstmt, err := s.c.Query(sql, connID); err == nil; err = tsstmt.Next() {
+			var respsTS, respCount int64
+			tsstmt.Scan(&respsTS, &respCount)
+
+			for ; i < respsTS; i++ {
+				fmt.Printf("   ")
+			}
+			fmt.Printf("%3d", respCount)
+			i++
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func (s *Storage) Report() error {
+	err := s.ReportConnSummary()
+	if err != nil {
+		return err
+	}
+
+	err = s.ReportReqsChart()
+	if err != nil {
+		return err
+	}
+
+	err = s.ReportRespsChart()
+	if err != nil {
+		return err
+	}
 	return nil
 }
