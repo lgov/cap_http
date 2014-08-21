@@ -313,9 +313,10 @@ func (s *Storage) ReportReqsChart() error {
 	}
 	stmt.Scan(&minReqTS, &maxReqTS)
 
+	/* Print the report header */
 	fmt.Printf("Conn\t")
 	for i := minReqTS; i <= maxReqTS; i++ {
-		fmt.Printf("%3d", i-minReqTS+1)
+		fmt.Printf("%4d", i-minReqTS+1)
 	}
 	fmt.Println()
 
@@ -338,9 +339,9 @@ func (s *Storage) ReportReqsChart() error {
 			tsstmt.Scan(&reqsTS, &reqCount)
 
 			for ; i < reqsTS; i++ {
-				fmt.Printf("   ")
+				fmt.Printf("    ")
 			}
-			fmt.Printf("%3d", reqCount)
+			fmt.Printf("%4d", reqCount)
 			i++
 		}
 		fmt.Println()
@@ -364,9 +365,10 @@ func (s *Storage) ReportRespsChart() error {
 	}
 	stmt.Scan(&minReqTS, &maxRespTS)
 
+	/* Print the report header */
 	fmt.Printf("Conn\t")
 	for i := minReqTS; i <= maxRespTS; i++ {
-		fmt.Printf("%3d", i-minReqTS+1)
+		fmt.Printf("%4d", i-minReqTS+1)
 	}
 	fmt.Println()
 
@@ -389,9 +391,9 @@ func (s *Storage) ReportRespsChart() error {
 			tsstmt.Scan(&respsTS, &respCount)
 
 			for ; i < respsTS; i++ {
-				fmt.Printf("   ")
+				fmt.Printf("    ")
 			}
-			fmt.Printf("%3d", respCount)
+			fmt.Printf("%4d", respCount)
 			i++
 		}
 		fmt.Println()
@@ -415,9 +417,10 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 	}
 	stmt.Scan(&minReqTS, &maxRespTS)
 
+	/* Print the report header */
 	fmt.Printf("Conn\t")
 	for i := minReqTS; i <= maxRespTS; i++ {
-		fmt.Printf("%3d", i-minReqTS+1)
+		fmt.Printf("%4d", i-minReqTS+1)
 	}
 	fmt.Println()
 
@@ -515,12 +518,12 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 		for i := minReqTS; i <= maxRespTS; i++ {
 			if curReqs, ok := reqsAtTS[i]; ok {
 				if curReqs > 0 {
-					fmt.Printf("%3d", curReqs)
+					fmt.Printf("%4d", curReqs)
 				} else {
-					fmt.Printf("   ")
+					fmt.Printf("    ")
 				}
 			} else {
-				fmt.Printf("   ")
+				fmt.Printf("    ")
 			}
 		}
 		fmt.Println()
