@@ -238,6 +238,7 @@ func main() {
 		panic(err)
 	}
 
+	/* TODO: we need a storage layer per goroutine! */
 	// Set up storage layer
 	storage, err := NewStorage()
 	if err != nil {
@@ -325,7 +326,10 @@ func main() {
 			os.Exit(0)
 
 		case <-timeout:
-			storage.Report()
+			if err = storage.Report(); err != nil {
+				log.Panic(err)
+			}
+
 			os.Exit(0)
 		}
 	}

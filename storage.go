@@ -18,6 +18,7 @@ import (
 	"code.google.com/p/go-sqlite/go1/sqlite3"
 	"code.google.com/p/gopacket"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -271,14 +272,14 @@ func (s *Storage) ReportConnSummary() error {
 			return err
 		}
 		fmt.Printf("%7.2f  ", (float64(inLength) / (1024 * 1024)))
-		fmt.Printf("%7.2f      ", (float64(outLength) / (1024 * 1024)))
+		fmt.Printf("%7.2f    ", (float64(outLength) / (1024 * 1024)))
 
 		inByteS, outByteS, err := s.bandwidthUsage(connID)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%4.2f        ", inByteS/1024)
-		fmt.Printf("%4.2f  ", outByteS/1024)
+		fmt.Printf("%6.2f      ", inByteS/1024)
+		fmt.Printf("%6.2f  ", outByteS/1024)
 
 		/* requests per method type */
 		sql = "SELECT method, count(method) FROM reqresps WHERE connID=? GROUP BY method " +
@@ -398,6 +399,135 @@ func (s *Storage) ReportRespsChart() error {
 	return nil
 }
 
+func (s *Storage) ReportPipelinedReqsChart() error {
+	fmt.Println()
+
+	fmt.Println("Requests pipelined per second")
+
+	var minReqTS, maxRespTS int64
+	// Start counting from when the first request was sent, so the report is
+	// lined out with the request report.
+	sql := "SELECT MIN(reqtimestamp / 1000000000), MAX(resptimestamp / 1000000000) " +
+		" FROM reqresps"
+	stmt, err := s.c.Query(sql)
+	if err != nil {
+		return err
+	}
+	stmt.Scan(&minReqTS, &maxRespTS)
+
+	fmt.Printf("Conn\t")
+	for i := minReqTS; i <= maxRespTS; i++ {
+		fmt.Printf("%3d", i-minReqTS+1)
+	}
+	fmt.Println()
+
+	sql = "SELECT id FROM conns"
+	connnr := 0
+	MAXINT64 := int64(^uint64(0) >> 1)
+	for connstmt, err := s.c.Query(sql); err == nil; err = connstmt.Next() {
+		var connID int64
+		connstmt.Scan(&connID)
+
+		connnr++
+		fmt.Printf("%4d\t", connnr)
+
+		sql = "SELECT reqtimestamp / 1000000000, COUNT(reqtimestamp/1000000000) " +
+			"FROM reqresps WHERE connID=? GROUP BY (reqtimestamp/1000000000) " +
+			"ORDER BY reqtimestamp"
+		reqstmt, err := s.c.Query(sql, connID)
+		if err != nil {
+			return err
+		}
+
+		sql = "SELECT resptimestamp / 1000000000, COUNT(resptimestamp/1000000000) " +
+			"FROM reqresps WHERE connID=? GROUP BY (resptimestamp/1000000000) " +
+			"ORDER BY resptimestamp"
+		respstmt, err := s.c.Query(sql, connID)
+		if err != nil {
+			return err
+		}
+
+		/* Create a table with the actual nr of outstanding requests per
+		   timestamp. The table only contains those timestamps where the
+		   counts change. */
+		var reqCount, respCount int64
+		reqsTS := MAXINT64
+		respsTS := MAXINT64
+		reqsAtTS := make(map[int64]int64)
+		curReqs := int64(0)
+		nextTS := int64(0)
+		err = reqstmt.Scan(&reqsTS, &reqCount)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		err = respstmt.Scan(&respsTS, &respCount)
+		if err != nil && err != io.EOF {
+			return err
+		}
+
+		for { /* reqsTS < ^int64(0) && respsTS < ^int64(0) */
+			usedReqTS := false
+			usedRespTS := false
+			if reqsTS == respsTS {
+				nextTS = reqsTS
+				curReqs += (reqCount - respCount)
+				usedReqTS = true
+				usedRespTS = true
+			} else if reqsTS < respsTS {
+				nextTS = reqsTS
+				curReqs += reqCount
+				usedReqTS = true
+			} else {
+				nextTS = respsTS
+				curReqs -= respCount
+				usedRespTS = true
+			}
+			reqsAtTS[nextTS] = curReqs
+
+			/* Find the next request timestamp */
+			if usedReqTS {
+				if err = reqstmt.Next(); err == nil {
+					reqstmt.Scan(&reqsTS, &reqCount)
+				} else if err == io.EOF {
+					reqsTS = MAXINT64
+				} else {
+					return err
+				}
+			}
+
+			/* Find the next response timestamp */
+			if usedRespTS {
+				if err = respstmt.Next(); err == nil {
+					respstmt.Scan(&respsTS, &respCount)
+				} else if err == io.EOF {
+					respsTS = MAXINT64
+				} else {
+					return err
+				}
+			}
+
+			if reqsTS == MAXINT64 && respsTS == MAXINT64 {
+				break
+			}
+		}
+
+		curReqs = int64(0)
+		for i := minReqTS; i <= maxRespTS; i++ {
+			if curReqs, ok := reqsAtTS[i]; ok {
+				if curReqs > 0 {
+					fmt.Printf("%3d", curReqs)
+				} else {
+					fmt.Printf("   ")
+				}
+			} else {
+				fmt.Printf("   ")
+			}
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
 func (s *Storage) Report() error {
 	err := s.ReportConnSummary()
 	if err != nil {
@@ -413,5 +543,11 @@ func (s *Storage) Report() error {
 	if err != nil {
 		return err
 	}
+
+	err = s.ReportPipelinedReqsChart()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
