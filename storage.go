@@ -299,14 +299,17 @@ func (s *Storage) ReportConnSummary() error {
 	return nil
 }
 
+/* Note:
+   sqlite uses a floor function when dividing a large number by 100000000000.
+*/
 func (s *Storage) ReportReqsChart() error {
 	fmt.Println()
 
 	fmt.Println("Requests per second")
 
 	var minReqTS, maxReqTS int64
-	sql := "SELECT MIN(reqtimestamp / 1000000000), MAX(reqtimestamp / 1000000000) " +
-		" FROM reqresps"
+	sql := "SELECT MIN(reqtimestamp)  / 1000000000, MAX(reqtimestamp)  / 1000000000 " +
+		"FROM reqresps"
 	stmt, err := s.c.Query(sql)
 	if err != nil {
 		return err
@@ -329,12 +332,14 @@ func (s *Storage) ReportReqsChart() error {
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		sql = "SELECT reqtimestamp / 1000000000, COUNT(reqtimestamp/1000000000) " +
-			"FROM reqresps WHERE connID=? GROUP BY (reqtimestamp/1000000000) " +
+		args := sqlite3.NamedArgs{"$connID": connID}
+		sql = "SELECT (reqtimestamp / 1000000000), " +
+			"COUNT(reqtimestamp / 1000000000) " +
+			"FROM reqresps WHERE connID = $connID GROUP BY (reqtimestamp / 1000000000) " +
 			"ORDER BY reqtimestamp"
 
 		i := minReqTS
-		for tsstmt, err := s.c.Query(sql, connID); err == nil; err = tsstmt.Next() {
+		for tsstmt, err := s.c.Query(sql, args); err == nil; err = tsstmt.Next() {
 			var reqsTS, reqCount int64
 			tsstmt.Scan(&reqsTS, &reqCount)
 
@@ -357,8 +362,8 @@ func (s *Storage) ReportRespsChart() error {
 	var minReqTS, maxRespTS int64
 	// Start counting from when the first request was sent, so the report is
 	// lined out with the request report.
-	sql := "SELECT MIN(reqtimestamp / 1000000000), MAX(resptimestamp / 1000000000) " +
-		" FROM reqresps"
+	sql := "SELECT MIN(reqtimestamp) / 1000000000, MAX(resptimestamp) / 1000000000 " +
+		"FROM reqresps"
 	stmt, err := s.c.Query(sql)
 	if err != nil {
 		return err
@@ -367,8 +372,9 @@ func (s *Storage) ReportRespsChart() error {
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
-	for i := minReqTS; i <= maxRespTS; i++ {
-		fmt.Printf("%4d", i-minReqTS+1)
+	var i int64
+	for i = 1; i <= maxRespTS-minReqTS+1; i++ {
+		fmt.Printf("%4d", i)
 	}
 	fmt.Println()
 
@@ -381,12 +387,13 @@ func (s *Storage) ReportRespsChart() error {
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		sql = "SELECT resptimestamp / 1000000000, COUNT(resptimestamp/1000000000) " +
-			"FROM reqresps WHERE connID=? GROUP BY (resptimestamp/1000000000) " +
+		args := sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
+		sql = "SELECT (resptimestamp / $conv), COUNT(resptimestamp / $conv) " +
+			"FROM reqresps WHERE connID=$connID GROUP BY (resptimestamp / $conv) " +
 			"ORDER BY resptimestamp"
 
 		i := minReqTS
-		for tsstmt, err := s.c.Query(sql, connID); err == nil; err = tsstmt.Next() {
+		for tsstmt, err := s.c.Query(sql, args); err == nil; err = tsstmt.Next() {
 			var respsTS, respCount int64
 			tsstmt.Scan(&respsTS, &respCount)
 
@@ -409,8 +416,8 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 	var minReqTS, maxRespTS int64
 	// Start counting from when the first request was sent, so the report is
 	// lined out with the request report.
-	sql := "SELECT MIN(reqtimestamp / 1000000000), MAX(resptimestamp / 1000000000) " +
-		" FROM reqresps"
+	sql := "SELECT MIN(reqtimestamp) / 1000000000, MAX(resptimestamp) / 1000000000 " +
+		"FROM reqresps"
 	stmt, err := s.c.Query(sql)
 	if err != nil {
 		return err
@@ -419,8 +426,9 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
-	for i := minReqTS; i <= maxRespTS; i++ {
-		fmt.Printf("%4d", i-minReqTS+1)
+	var i int64
+	for i = 1; i <= maxRespTS-minReqTS+1; i++ {
+		fmt.Printf("%4d", i)
 	}
 	fmt.Println()
 
@@ -434,18 +442,21 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		sql = "SELECT reqtimestamp / 1000000000, COUNT(reqtimestamp/1000000000) " +
-			"FROM reqresps WHERE connID=? GROUP BY (reqtimestamp/1000000000) " +
+		args := sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
+		sql = "SELECT (reqtimestamp / $conv), " +
+			"COUNT(reqtimestamp / $conv) " +
+			"FROM reqresps WHERE connID = $connID GROUP BY (reqtimestamp / $conv) " +
 			"ORDER BY reqtimestamp"
-		reqstmt, err := s.c.Query(sql, connID)
+		reqstmt, err := s.c.Query(sql, args)
 		if err != nil {
 			return err
 		}
 
-		sql = "SELECT resptimestamp / 1000000000, COUNT(resptimestamp/1000000000) " +
-			"FROM reqresps WHERE connID=? GROUP BY (resptimestamp/1000000000) " +
+		args = sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
+		sql = "SELECT (resptimestamp / $conv), COUNT(resptimestamp / $conv) " +
+			"FROM reqresps WHERE connID=$connID GROUP BY (resptimestamp / $conv) " +
 			"ORDER BY resptimestamp"
-		respstmt, err := s.c.Query(sql, connID)
+		respstmt, err := s.c.Query(sql, args)
 		if err != nil {
 			return err
 		}
@@ -514,16 +525,15 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 			}
 		}
 
+		//		fmt.Println(reqsAtTS)
 		curReqs = int64(0)
+		prevReqs := int64(0)
 		for i := minReqTS; i <= maxRespTS; i++ {
 			if curReqs, ok := reqsAtTS[i]; ok {
-				if curReqs > 0 {
-					fmt.Printf("%4d", curReqs)
-				} else {
-					fmt.Printf("    ")
-				}
+				fmt.Printf("%4d", curReqs)
+				prevReqs = curReqs
 			} else {
-				fmt.Printf("    ")
+				fmt.Printf("%4d", prevReqs)
 			}
 		}
 		fmt.Println()
