@@ -254,7 +254,12 @@ func (r *Reporting) ReportReqsChart() error {
 			"ORDER BY reqtimestamp"
 
 		i := minReqTS
-		for tsstmt, err := r.c.Query(sql, args); err == nil; err = tsstmt.Next() {
+		tsstmt, err := r.c.Query(sql, args)
+		if err == io.EOF {
+			fmt.Println("- n/a -")
+			continue
+		}
+		for ; err == nil; err = tsstmt.Next() {
 			var reqsTS, reqCount int64
 			tsstmt.Scan(&reqsTS, &reqCount)
 
@@ -308,7 +313,12 @@ func (r *Reporting) ReportRespsChart() error {
 			"GROUP BY (resptimestamp / $conv) ORDER BY resptimestamp"
 
 		i := minReqTS
-		for tsstmt, err := r.c.Query(sql, args); err == nil; err = tsstmt.Next() {
+		tsstmt, err := r.c.Query(sql, args)
+		if err == io.EOF {
+			fmt.Println("- n/a -")
+			continue
+		}
+		for ; err == nil; err = tsstmt.Next() {
 			var respsTS, respCount int64
 			tsstmt.Scan(&respsTS, &respCount)
 
@@ -363,7 +373,7 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 			"FROM reqresps WHERE connID = $connID GROUP BY (reqtimestamp / $conv) " +
 			"ORDER BY reqtimestamp"
 		reqstmt, err := r.c.Query(sql, args)
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return err
 		}
 
@@ -372,8 +382,12 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 			"FROM reqresps WHERE connID=$connID AND resptimestamp != 0 " +
 			"GROUP BY (resptimestamp / $conv) ORDER BY resptimestamp"
 		respstmt, err := r.c.Query(sql, args)
-		if err != nil {
+		if err != nil && err != io.EOF {
 			return err
+		}
+		if reqstmt == nil || respstmt == nil {
+			fmt.Println("- n/a -")
+			continue
 		}
 
 		/* Create a table with the actual nr of outstanding requests per
