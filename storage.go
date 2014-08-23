@@ -84,7 +84,7 @@ func NewStorage() (*Storage, error) {
 		return nil, err
 	}
 	storage.insResp, err = c.Prepare("UPDATE reqresps set resptimestamp = ?, " +
-		"status = ? WHERE reqID = ?")
+		"status = ? WHERE reqID = ? AND connID = ?")
 	if err != nil {
 		return nil, err
 	}
@@ -116,5 +116,5 @@ func (s *Storage) SentRequest(connID uint64, reqID int64, timestamp time.Time,
 
 func (s *Storage) ReceivedResponse(connID uint64, reqID int64, timestamp time.Time,
 	resp *http.Response) error {
-	return s.insResp.Exec(timestamp.UnixNano(), resp.StatusCode, reqID)
+	return s.insResp.Exec(timestamp.UnixNano(), resp.StatusCode, reqID, int64(connID))
 }
