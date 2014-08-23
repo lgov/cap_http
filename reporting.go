@@ -304,8 +304,8 @@ func (r *Reporting) ReportRespsChart() error {
 
 		args := sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
 		sql = "SELECT (resptimestamp / $conv), COUNT(resptimestamp / $conv) " +
-			"FROM reqresps WHERE connID=$connID GROUP BY (resptimestamp / $conv) " +
-			"ORDER BY resptimestamp"
+			"FROM reqresps WHERE connID=$connID AND resptimestamp != 0 " +
+			"GROUP BY (resptimestamp / $conv) ORDER BY resptimestamp"
 
 		i := minReqTS
 		for tsstmt, err := r.c.Query(sql, args); err == nil; err = tsstmt.Next() {
@@ -369,8 +369,8 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 
 		args = sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
 		sql = "SELECT (resptimestamp / $conv), COUNT(resptimestamp / $conv) " +
-			"FROM reqresps WHERE connID=$connID GROUP BY (resptimestamp / $conv) " +
-			"ORDER BY resptimestamp"
+			"FROM reqresps WHERE connID=$connID AND resptimestamp != 0 " +
+			"GROUP BY (resptimestamp / $conv) ORDER BY resptimestamp"
 		respstmt, err := r.c.Query(sql, args)
 		if err != nil {
 			return err
