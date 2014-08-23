@@ -212,12 +212,12 @@ func (a *Assembler) AssembleWithTimestamp(netFlow gopacket.Flow, t *layers.TCP,
 	a.assembler.AssembleWithTimestamp(netFlow, t, timestamp)
 }
 
-/* Wait for a couple of seconds, just enough to get the events handled by the
+/* Wait for a couple of seconds T, just enough to get the events handled by the
    main function. */
-func wait_for_responses_to_arrive() (timeout chan bool) {
+func wait_for_responses_to_arrive(t time.Duration) (timeout chan bool) {
 	timeout = make(chan bool, 1)
 	go func() {
-		time.Sleep(2 * time.Second)
+		time.Sleep(t * time.Second)
 		timeout <- true
 	}()
 	return timeout
@@ -314,19 +314,21 @@ func main() {
 
 			log.Println("Waiting for the remaining responses to arrive.")
 
-			/* Wait a couple of seconds here */
-			timeout = wait_for_responses_to_arrive()
+			/* Wait for a couple of seconds, just enough to get the events
+			   handled by the main function. */
+			timeout = wait_for_responses_to_arrive(2)
 
 		case <-ctrlc:
-			if err := storage.Report(); err != nil {
-				log.Println(err)
-			}
-
-			//			pprof.StopCPUProfile()
-			os.Exit(0)
+			/* Don't wait. */
+			timeout = wait_for_responses_to_arrive(0)
 
 		case <-timeout:
-			if err = storage.Report(); err != nil {
+			reporting, err := NewReporting()
+			if err != nil {
+				panic(err)
+			}
+
+			if err = reporting.Report(); err != nil {
 				log.Panic(err)
 			}
 
