@@ -321,7 +321,7 @@ func (s *Storage) ReportReqsChart() error {
 	for i := minReqTS; i <= maxReqTS; i++ {
 		fmt.Printf("%4d", i-minReqTS+1)
 	}
-	fmt.Println()
+	fmt.Println("   t(s)")
 
 	sql = "SELECT id FROM conns"
 	connnr := 0
@@ -376,7 +376,7 @@ func (s *Storage) ReportRespsChart() error {
 	for i = 1; i <= maxRespTS-minReqTS+1; i++ {
 		fmt.Printf("%4d", i)
 	}
-	fmt.Println()
+	fmt.Println("   t(s)")
 
 	sql = "SELECT id FROM conns"
 	connnr := 0
@@ -430,7 +430,7 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 	for i = 1; i <= maxRespTS-minReqTS+1; i++ {
 		fmt.Printf("%4d", i)
 	}
-	fmt.Println()
+	fmt.Println("   t(s)")
 
 	sql = "SELECT id FROM conns"
 	connnr := 0
@@ -530,10 +530,18 @@ func (s *Storage) ReportPipelinedReqsChart() error {
 		prevReqs := int64(0)
 		for i := minReqTS; i <= maxRespTS; i++ {
 			if curReqs, ok := reqsAtTS[i]; ok {
-				fmt.Printf("%4d", curReqs)
+				if curReqs == 0 {
+					fmt.Printf("    ")
+				} else {
+					fmt.Printf("%4d", curReqs)
+				}
 				prevReqs = curReqs
 			} else {
-				fmt.Printf("%4d", prevReqs)
+				if curReqs == 0 {
+					fmt.Printf("    ")
+				} else {
+					fmt.Printf("%4d", prevReqs)
+				}
 			}
 		}
 		fmt.Println()
