@@ -24,7 +24,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	//	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -212,9 +211,23 @@ func (a *Assembler) AssembleWithTimestamp(netFlow gopacket.Flow, t *layers.TCP,
 	a.assembler.AssembleWithTimestamp(netFlow, t, timestamp)
 }
 
-/* Wait for a couple of seconds T, just enough to get the events handled by the
-   main function. */
-func wait_for_responses_to_arrive(t time.Duration) (timeout chan bool) {
+func create_process_ended_channel(cmd *exec.Cmd) (cmd_done chan error) {
+	cmd_done = make(chan error, 1)
+	go func() {
+		cmd_done <- cmd.Wait()
+	}()
+	return cmd_done
+}
+
+/* Create a channel and send any CTRL-C signal over it */
+func create_ctrl_c_handler() (timeout chan os.Signal) {
+	ctrlc := make(chan os.Signal, 1)
+	signal.Notify(ctrlc, os.Interrupt)
+	return ctrlc
+}
+
+/* Create a channel that will contain TRUE after T seconds. */
+func create_timeout_channel(t time.Duration) (timeout chan bool) {
 	timeout = make(chan bool, 1)
 	go func() {
 		time.Sleep(t * time.Second)
@@ -230,14 +243,6 @@ func main() {
 
 	log.Printf("starting capture on interface %q", *iface)
 
-	// Setup packet capture
-	handle, err := pcap.OpenLive(*iface, 1600, true, pcap.BlockForever)
-	if err != nil {
-		panic(err)
-	} else if err := handle.SetBPFFilter("tcp and port 80"); err != nil {
-		panic(err)
-	}
-
 	/* TODO: we need a storage layer per goroutine! */
 	// Set up storage layer
 	storage, err := NewStorage()
@@ -251,10 +256,25 @@ func main() {
 	streamPool := tcpassembly.NewStreamPool(streamFactory)
 	assembler := NewAssembler(streamPool)
 
-	// Setup CTRL-C handler
-	ctrlc := make(chan os.Signal, 1)
-	signal.Notify(ctrlc, os.Interrupt)
+	// Setup CTRL-C handler channel
+	ctrlc := create_ctrl_c_handler()
 
+	// Setup channel that reports all socket kernel events (Mac OS X only)
+	netDescSource := NewOSXNetDescSource()
+	descriptors := netDescSource.Descriptors()
+
+	// Setup packet capture
+	handle, err := pcap.OpenLive(*iface, 1600, true, pcap.BlockForever)
+	if err != nil {
+		panic(err)
+	} else if err := handle.SetBPFFilter("tcp and port 80"); err != nil {
+		panic(err)
+	}
+	log.Println("reading in packets. Press CTRL-C to end and report.")
+	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	packets := packetSource.Packets()
+
+	// Run the external command
 	pid := uint32(0)
 	var cmd_done chan error
 	var start_time time.Time
@@ -270,23 +290,12 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		cmd_done = make(chan error, 1)
-		go func() {
-			cmd_done <- cmd.Wait()
-		}()
+		// Create the channel that listens for the end of the command.
+		cmd_done = create_process_ended_channel(cmd)
 		pid = uint32(cmd.Process.Pid)
-		fmt.Println("PID: ", cmd.Process.Pid)
 	}
 
-	netDescSource := NewOSXNetDescSource()
-	descriptors := netDescSource.Descriptors()
-
-	log.Println("reading in packets. Press CTRL-C to end and report.")
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	packets := packetSource.Packets()
-
 	var timeout chan bool
-
 	for {
 		select {
 		case netDesc := <-descriptors:
@@ -316,11 +325,11 @@ func main() {
 
 			/* Wait for a couple of seconds, just enough to get the events
 			   handled by the main function. */
-			timeout = wait_for_responses_to_arrive(2)
+			timeout = create_timeout_channel(2)
 
 		case <-ctrlc:
 			/* Don't wait. */
-			timeout = wait_for_responses_to_arrive(0)
+			timeout = create_timeout_channel(0)
 
 		case <-timeout:
 			reporting, err := NewReporting()
