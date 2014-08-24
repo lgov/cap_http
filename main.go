@@ -286,10 +286,17 @@ func main() {
 		args := strings.Split(s, " ")
 		cmd := exec.Command(args[0], args[1:]...)
 		start_time = time.Now()
-		err := cmd.Start()
+		cmd_stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = cmd.Start()
 		if err != nil {
 			panic(err)
 		}
+		go io.Copy(os.Stdout, cmd_stdout)
+		//		cmd.Stdout = os.Stdout
+		//		cmd.Stderr = os.Stderr
 		// Create the channel that listens for the end of the command.
 		cmd_done = create_process_ended_channel(cmd)
 		pid = uint32(cmd.Process.Pid)
