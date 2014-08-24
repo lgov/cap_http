@@ -29,13 +29,15 @@ import (
  */
 
 type Storage struct {
-	c          *sqlite3.Conn
-	insConn    *sqlite3.Stmt
-	closeConn  *sqlite3.Stmt
-	inLenConn  *sqlite3.Stmt
-	outLenConn *sqlite3.Stmt
-	insReq     *sqlite3.Stmt
-	insResp    *sqlite3.Stmt
+	c            *sqlite3.Conn
+	insConn      *sqlite3.Stmt
+	closeConn    *sqlite3.Stmt
+	inLenConn    *sqlite3.Stmt
+	outLenConn   *sqlite3.Stmt
+	inCountConn  *sqlite3.Stmt
+	outCountConn *sqlite3.Stmt
+	insReq       *sqlite3.Stmt
+	insResp      *sqlite3.Stmt
 }
 
 // constructor
@@ -52,10 +54,11 @@ func NewStorage() (*Storage, error) {
 
 	c.Exec("CREATE TABLE conns(id INTEGER, opentimestamp INTEGER, " +
 		"closetimestamp INTEGER, src_ip TEXT, src_port INTEGER, " +
-		"dst_ip string, dst_port INTEGER, inLength INTEGER, outLength INTEGER)")
+		"dst_ip string, dst_port INTEGER, inLength INTEGER, outLength INTEGER, " +
+		"inCount INTEGER, outCount INTEGER)")
 
 	/* Create prepared statements */
-	sql := "INSERT into conns VALUES (?, ?, 0, ?, ?, ?, ?, 0, 0)"
+	sql := "INSERT into conns VALUES (?, ?, 0, ?, ?, ?, ?, 0, 0, 0, 0)"
 	if storage.insConn, err = c.Prepare(sql); err != nil {
 		return nil, err
 	}
@@ -70,12 +73,21 @@ func NewStorage() (*Storage, error) {
 	if err != nil {
 		return nil, err
 	}
+	storage.inCountConn, err = c.Prepare("UPDATE conns SET inCount = inCount + 1 " +
+		"WHERE id = ?")
+	if err != nil {
+		return nil, err
+	}
 	storage.outLenConn, err = c.Prepare("UPDATE conns SET outLength = outLength + ? " +
 		"WHERE id = ?")
 	if err != nil {
 		return nil, err
 	}
-
+	storage.outCountConn, err = c.Prepare("UPDATE conns SET outCount = outCount + 1 " +
+		"WHERE id = ?")
+	if err != nil {
+		return nil, err
+	}
 	c.Exec("CREATE TABLE reqresps(connID INTEGER, reqtimestamp INTEGER, reqId INTEGER," +
 		"method TEXT, url TEXT, resptimestamp INTEGER, status INTEGER)")
 	storage.insReq, err = c.Prepare("INSERT into reqresps VALUES (" +
@@ -103,10 +115,20 @@ func (s *Storage) OpenTCPConnection(connID uint64, timestamp time.Time) error {
 		2, "", 3)
 }
 func (s *Storage) IncomingTCPPacket(connID uint64, payloadLength uint32) error {
-	return s.inLenConn.Exec(int64(payloadLength), int64(connID))
+	if err := s.inLenConn.Exec(int64(payloadLength), int64(connID)); err != nil {
+		return err
+	} else if err = s.inCountConn.Exec(int64(connID)); err != nil {
+		return err
+	}
+	return nil
 }
 func (s *Storage) OutgoingTCPPacket(connID uint64, payloadLength uint32) error {
-	return s.outLenConn.Exec(int64(payloadLength), int64(connID))
+	if err := s.outLenConn.Exec(int64(payloadLength), int64(connID)); err != nil {
+		return err
+	} else if err := s.outCountConn.Exec(int64(connID)); err != nil {
+		return err
+	}
+	return nil
 }
 func (s *Storage) SentRequest(connID uint64, reqID int64, timestamp time.Time,
 	req *http.Request) error {

@@ -113,6 +113,21 @@ func (r *Reporting) payloadLength(connID int64) (int64, int64, error) {
 	return inLength, outLength, nil
 }
 
+func (r *Reporting) packetCount(connID int64) (int64, int64, error) {
+
+	var inCount, outCount int64
+
+	sql := "SELECT inCount, outCount from conns WHERE id=?"
+	stmt, err := r.c.Query(sql, connID)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	stmt.Scan(&inCount, &outCount)
+
+	return inCount, outCount, nil
+}
+
 func (r *Reporting) bandwidthUsage(connID int64) (inByteS float64, outByteS float64, err error) {
 
 	/* Not ideal. TODO: track request bandwidth and response bandwidth separately. */
@@ -148,7 +163,7 @@ func (r *Reporting) ReportConnSummary() error {
 	sql := "SELECT id, opentimestamp FROM conns"
 	i := 0
 
-	fmt.Printf("Conn\t# reqs\t# noresp  avg resp  avg queue  in MiB  out MiB  in KiB/s   out KiB/s  per method\t\n")
+	fmt.Printf("Conn\t# reqs\t# noresp  resp time  avg queue  in MiB  out MiB   in pkt  out pkt  in KiB/s  out KiB/s  per method\t\n")
 	for connstmt, err := r.c.Query(sql); err == nil; err = connstmt.Next() {
 		i++
 
@@ -158,6 +173,7 @@ func (r *Reporting) ReportConnSummary() error {
 
 		fmt.Printf("%4d\t", i)
 
+		/* # of reqs */
 		var nrOfRequests int64
 		sql := "SELECT count(*) FROM reqresps WHERE connID=?"
 		stmt, err := r.c.Query(sql, connID)
@@ -167,6 +183,7 @@ func (r *Reporting) ReportConnSummary() error {
 		stmt.Scan(&nrOfRequests)
 		fmt.Printf("%6d\t", nrOfRequests)
 
+		/* # of requests without response */
 		var nrOfRequestsNoResp int64
 		sql = "SELECT count(*) FROM reqresps where status = 0 AND connID=?"
 		stmt, err = r.c.Query(sql, connID)
@@ -176,32 +193,43 @@ func (r *Reporting) ReportConnSummary() error {
 		stmt.Scan(&nrOfRequestsNoResp)
 		fmt.Printf("%8d  ", nrOfRequestsNoResp)
 
-		/* Average waiting time */
+		/* Average response time in seconds */
 		avgWaitingTimeNS, err := r.avgWaitingTime(connID)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%9.1f ", avgWaitingTimeNS/1000000000)
+		fmt.Printf("%9.1f  ", avgWaitingTimeNS/1000000000)
 
+		/* Average queue length */
 		avgQueueLength, err := r.avgQueueLength(connID)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("%9.1f ", avgQueueLength)
 
+		/* In and Out MiB */
 		inLength, outLength, err := r.payloadLength(connID)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("%7.2f  ", (float64(inLength) / (1024 * 1024)))
-		fmt.Printf("%7.2f    ", (float64(outLength) / (1024 * 1024)))
+		fmt.Printf("%7.2f   ", (float64(outLength) / (1024 * 1024)))
 
+		/* In and Out # of IP packets */
+		inCount, outCount, err := r.packetCount(connID)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%6d   ", inCount)
+		fmt.Printf("%6d   ", outCount)
+
+		/* In and Out KiB/s */
 		inByteS, outByteS, err := r.bandwidthUsage(connID)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%6.2f      ", inByteS/1024)
-		fmt.Printf("%6.2f  ", outByteS/1024)
+		fmt.Printf("%7.2f    ", inByteS/1024)
+		fmt.Printf("%7.2f  ", outByteS/1024)
 
 		/* requests per method type */
 		sql = "SELECT method, count(method) FROM reqresps WHERE connID=? GROUP BY method " +
