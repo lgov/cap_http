@@ -467,16 +467,14 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 		//      fmt.Println(reqsAtTS)
 		curReqs = int64(0)
 		prevReqs := int64(0)
+		connOpen := false
 		for i := int64(0); i <= maxRespTS-minReqTS; i++ {
 			if curReqs, ok := reqsAtTS[i]; ok {
-				if curReqs == 0 {
-					fmt.Printf("    ")
-				} else {
-					fmt.Printf("%4d", curReqs)
-				}
+				fmt.Printf("%4d", curReqs)
 				prevReqs = curReqs
+				connOpen = true
 			} else {
-				if curReqs == 0 {
+				if !connOpen {
 					fmt.Printf("    ")
 				} else {
 					fmt.Printf("%4d", prevReqs)
