@@ -148,7 +148,7 @@ func (r *Reporting) ReportConnSummary() error {
 	sql := "SELECT id, opentimestamp FROM conns"
 	i := 0
 
-	fmt.Printf("Conn\t# reqs\t# noresp  avg queue  in MiB  out MiB  in KiB/s   out KiB/s  per method\t\n")
+	fmt.Printf("Conn\t# reqs\t# noresp  avg resp  avg queue  in MiB  out MiB  in KiB/s   out KiB/s  per method\t\n")
 	for connstmt, err := r.c.Query(sql); err == nil; err = connstmt.Next() {
 		i++
 
@@ -175,6 +175,13 @@ func (r *Reporting) ReportConnSummary() error {
 		}
 		stmt.Scan(&nrOfRequestsNoResp)
 		fmt.Printf("%8d  ", nrOfRequestsNoResp)
+
+		/* Average waiting time */
+		avgWaitingTimeNS, err := r.avgWaitingTime(connID)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%9.1f ", avgWaitingTimeNS/1000000000)
 
 		avgQueueLength, err := r.avgQueueLength(connID)
 		if err != nil {
@@ -222,14 +229,15 @@ func (r *Reporting) ReportReqsChart() error {
 
 	fmt.Println("Requests per second")
 
-	var minReqTS, maxReqTS int64
-	sql := "SELECT MIN(reqtimestamp)  / 1000000000, MAX(reqtimestamp)  / 1000000000 " +
-		"FROM reqresps"
+	var minReqTSns, maxReqTSns int64
+	sql := "SELECT MIN(reqtimestamp), MAX(reqtimestamp) FROM reqresps"
 	stmt, err := r.c.Query(sql)
 	if err != nil {
 		return err
 	}
-	stmt.Scan(&minReqTS, &maxReqTS)
+	stmt.Scan(&minReqTSns, &maxReqTSns)
+	minReqTS := int64(minReqTSns / 1000000000)
+	maxReqTS := int64(maxReqTSns / 1000000000)
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
@@ -247,13 +255,13 @@ func (r *Reporting) ReportReqsChart() error {
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		args := sqlite3.NamedArgs{"$connID": connID}
-		sql = "SELECT (reqtimestamp / 1000000000), " +
-			"COUNT(reqtimestamp / 1000000000) " +
-			"FROM reqresps WHERE connID = $connID GROUP BY (reqtimestamp / 1000000000) " +
+		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		sql = "SELECT ((reqtimestamp-$ref) / $conv), " +
+			"COUNT((reqtimestamp-$ref) / $conv) " +
+			"FROM reqresps WHERE connID = $connID GROUP BY ((reqtimestamp-$ref) / $conv) " +
 			"ORDER BY reqtimestamp"
 
-		i := minReqTS
+		i := int64(0)
 		tsstmt, err := r.c.Query(sql, args)
 		if err == io.EOF {
 			fmt.Println("- n/a -")
@@ -279,16 +287,17 @@ func (r *Reporting) ReportRespsChart() error {
 
 	fmt.Println("Responses per second")
 
-	var minReqTS, maxRespTS int64
+	var minReqTSns, maxRespTSns int64
 	// Start counting from when the first request was sent, so the report is
 	// lined out with the request report.
-	sql := "SELECT MIN(reqtimestamp) / 1000000000, MAX(resptimestamp) / 1000000000 " +
-		"FROM reqresps"
+	sql := "SELECT MIN(reqtimestamp), MAX(resptimestamp) FROM reqresps"
 	stmt, err := r.c.Query(sql)
 	if err != nil {
 		return err
 	}
-	stmt.Scan(&minReqTS, &maxRespTS)
+	stmt.Scan(&minReqTSns, &maxRespTSns)
+	minReqTS := int64(minReqTSns / 1000000000)
+	maxRespTS := int64(maxRespTSns / 1000000000)
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
@@ -307,12 +316,12 @@ func (r *Reporting) ReportRespsChart() error {
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		args := sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
-		sql = "SELECT (resptimestamp / $conv), COUNT(resptimestamp / $conv) " +
+		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		sql = "SELECT ((resptimestamp-$ref)/$conv), COUNT((resptimestamp-$ref)/$conv) " +
 			"FROM reqresps WHERE connID=$connID AND resptimestamp != 0 " +
-			"GROUP BY (resptimestamp / $conv) ORDER BY resptimestamp"
+			"GROUP BY ((resptimestamp-$ref)/$conv) ORDER BY resptimestamp"
 
-		i := minReqTS
+		i := int64(0)
 		tsstmt, err := r.c.Query(sql, args)
 		if err == io.EOF {
 			fmt.Println("- n/a -")
@@ -338,16 +347,17 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 
 	fmt.Println("Requests pipelined per second")
 
-	var minReqTS, maxRespTS int64
+	var minReqTSns, maxRespTSns int64
 	// Start counting from when the first request was sent, so the report is
 	// lined out with the request report.
-	sql := "SELECT MIN(reqtimestamp) / 1000000000, MAX(resptimestamp) / 1000000000 " +
-		"FROM reqresps"
+	sql := "SELECT MIN(reqtimestamp), MAX(resptimestamp) FROM reqresps"
 	stmt, err := r.c.Query(sql)
 	if err != nil {
 		return err
 	}
-	stmt.Scan(&minReqTS, &maxRespTS)
+	stmt.Scan(&minReqTSns, &maxRespTSns)
+	minReqTS := int64(minReqTSns / 1000000000)
+	maxRespTS := int64(maxRespTSns / 1000000000)
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
@@ -367,20 +377,20 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		args := sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
-		sql = "SELECT (reqtimestamp / $conv), " +
-			"COUNT(reqtimestamp / $conv) " +
-			"FROM reqresps WHERE connID = $connID GROUP BY (reqtimestamp / $conv) " +
+		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		sql = "SELECT ((reqtimestamp-$ref) / $conv), " +
+			"COUNT((reqtimestamp-$ref) / $conv) " +
+			"FROM reqresps WHERE connID = $connID GROUP BY ((reqtimestamp-$ref) / $conv) " +
 			"ORDER BY reqtimestamp"
 		reqstmt, err := r.c.Query(sql, args)
 		if err != nil && err != io.EOF {
 			return err
 		}
 
-		args = sqlite3.NamedArgs{"$connID": connID, "$conv": 1000000000}
-		sql = "SELECT (resptimestamp / $conv), COUNT(resptimestamp / $conv) " +
+		args = sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		sql = "SELECT ((resptimestamp-$ref)/$conv), COUNT((resptimestamp-$ref)/$conv) " +
 			"FROM reqresps WHERE connID=$connID AND resptimestamp != 0 " +
-			"GROUP BY (resptimestamp / $conv) ORDER BY resptimestamp"
+			"GROUP BY ((resptimestamp-$ref)/$conv) ORDER BY resptimestamp"
 		respstmt, err := r.c.Query(sql, args)
 		if err != nil && err != io.EOF {
 			return err
@@ -457,7 +467,7 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 		//      fmt.Println(reqsAtTS)
 		curReqs = int64(0)
 		prevReqs := int64(0)
-		for i := minReqTS; i <= maxRespTS; i++ {
+		for i := int64(0); i <= maxRespTS-minReqTS; i++ {
 			if curReqs, ok := reqsAtTS[i]; ok {
 				if curReqs == 0 {
 					fmt.Printf("    ")
