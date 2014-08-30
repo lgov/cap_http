@@ -53,7 +53,7 @@ func NewStorage() (*Storage, error) {
 	storage = &Storage{}
 	/* TODO: if this buffer isn't large enough we start to loose responses
 	   when shutting down. */
-	storage.queue = make(chan Event, 10000)
+	storage.queue = make(chan Event, 1000)
 	storage.done = make(chan bool)
 	storage.closing = make(chan bool)
 
@@ -139,7 +139,11 @@ func (s *Storage) run(ctx context.Context) {
 	_ = s.initPreparedStmts()
 	defer s.cleanup()
 
+	/* Begin a new transaction */
+	s.c.Begin()
+
 	closing := false
+loop:
 	for {
 		select {
 		case event := <-s.queue:
@@ -150,15 +154,21 @@ func (s *Storage) run(ctx context.Context) {
 			   This assumes that the senders will stop queueing events
 			   eventually. */
 			if len(s.queue) == 0 && closing {
-				s.done <- true
-				return
+				break loop
 			}
 		case <-s.closing:
-			// remaining := len(s.queue)
-			//			fmt.Println("Cancelling storage, remaining on queue:", remaining)
+			remaining := len(s.queue)
+			fmt.Println("Cancelling storage, remaining on queue:", remaining)
 			closing = true
+		default:
+			if len(s.queue) == 0 && closing {
+				break loop
+			}
 		}
 	}
+
+	s.c.Commit()
+	s.done <- true
 }
 
 func (s *Storage) PacketInScope(gopacket.Packet) bool {
