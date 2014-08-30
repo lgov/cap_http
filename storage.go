@@ -131,7 +131,6 @@ func (s *Storage) initPreparedStmts() error {
 }
 
 func (s *Storage) cleanup() {
-	fmt.Println("Cleanup storage")
 	close(s.queue)
 	s.c.Close()
 }
