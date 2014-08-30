@@ -22,7 +22,6 @@ import (
 	"code.google.com/p/gopacket/tcpassembly"
 	"code.google.com/p/gopacket/tcpassembly/tcpreader"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -54,19 +53,31 @@ type TCPStream struct {
 	readStream       tcpreader.ReaderStream
 	storage          *Storage
 	bidikey          uint64
+	closed           bool
 }
 
 /* This reads both HTTP requests and HTTP responses in two separate streams */
 func (h *TCPStream) runOut() {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
+
 	for {
+		_, err := buf.Peek(1)
+		if err == io.EOF {
+			return
+		}
 		req, err := http.ReadRequest(buf)
 		if err == io.EOF {
 			// We must read until we see an EOF... very important!
 			return
 		} else if err != nil {
-			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
+			tcpreader.DiscardBytesToFirstError(buf)
+
+			if h.closed == true {
+				// error occurred after stream was closed, ignore.
+			} else {
+				log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
+			}
 		} else {
 			// bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
 			req.Body.Close()
@@ -87,7 +98,6 @@ func (h *TCPStream) runIn() {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
 	for {
-
 		/* Don't start reading a response if no data is available */
 		_, err := buf.Peek(1)
 		if err == io.EOF {
@@ -97,14 +107,19 @@ func (h *TCPStream) runIn() {
 		resp, err := http.ReadResponse(buf, nil) // TODO: request
 		if err == io.EOF {
 			// We must read until we see an EOF... very important!
-			log.Println("EOF while reading stream", h.netFlow, h.tcpFlow, ":", err)
+			//			log.Println("EOF while reading stream", h.netFlow, h.tcpFlow, ":", err)
 			return
 		} else if err != nil {
-			log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
+			tcpreader.DiscardBytesToFirstError(buf)
+			if h.closed == true {
+				// error occurred after stream was closed, ignore.
+			} else {
+				log.Println("Error reading stream", h.netFlow, h.tcpFlow, ":", err)
+			}
 		} else {
 			_, err := tcpreader.DiscardBytesToFirstError(resp.Body)
 			if err != nil && err != io.EOF {
-				log.Println(err)
+				log.Println("Error discarding bytes ", err)
 			}
 			resp.Body.Close()
 			err = h.storage.ReceivedResponse(h.bidikey, reqID, time.Now(), resp)
@@ -116,7 +131,6 @@ func (h *TCPStream) runIn() {
 			//log.Println("Received response from stream", h.netFlow, h.tcpFlow,
 			//	":", resp, "with", bodyBytes, "bytes in response body")
 		}
-
 		/* Match the response with the next request */
 	}
 
@@ -126,10 +140,21 @@ func (h *TCPStream) runIn() {
 type httpStreamFactory struct {
 	bidiStreams map[uint64]*BidiStream
 	storage     *Storage
+	closed      bool
 }
 
+func NewStreamFactory(s *Storage) *httpStreamFactory {
+	return &httpStreamFactory{bidiStreams: make(map[uint64]*BidiStream),
+		storage: s}
+}
 func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 
+	/* Watch out: this function can still get called even after all
+	   streams were flushed (via FlushAll) and closed. */
+	/*	if h.closed == true {
+			return tcpreader.NewReaderStream()
+		}
+	*/
 	/* First the outgoing stream, then the incoming stream */
 	key := netFlow.FastHash() ^ tcpFlow.FastHash()
 
@@ -143,13 +168,14 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 
 	bds := h.bidiStreams[key]
 	if bds == nil {
-		log.Println("reading stream", netFlow, tcpFlow)
+		//		log.Println("reading stream", netFlow, tcpFlow)
 		bds = &BidiStream{out: hstream, key: key}
 		h.bidiStreams[key] = bds
 		// Start a coroutine per stream, to ensure that all data is read from
 		// the reader stream
 		go hstream.runOut()
 	} else {
+		//		log.Println("opening TCP conn", netFlow, tcpFlow)
 		bds.in = hstream
 		err := h.storage.OpenTCPConnection(key, time.Now())
 		if err != nil {
@@ -197,20 +223,6 @@ func (h *httpStreamFactory) LogPacketSize(packet gopacket.Packet) {
 	}
 }
 
-type Assembler struct {
-	assembler *tcpassembly.Assembler
-}
-
-func NewAssembler(streamPool *tcpassembly.StreamPool) *Assembler {
-	return &Assembler{tcpassembly.NewAssembler(streamPool)}
-}
-
-/* PFF, a lot of abstractions that make things more difficult then they should be! */
-func (a *Assembler) AssembleWithTimestamp(netFlow gopacket.Flow, t *layers.TCP,
-	timestamp time.Time) {
-	a.assembler.AssembleWithTimestamp(netFlow, t, timestamp)
-}
-
 func create_process_ended_channel(cmd *exec.Cmd) (cmd_done chan error) {
 	cmd_done = make(chan error, 1)
 	go func() {
@@ -243,7 +255,6 @@ func main() {
 
 	log.Printf("starting capture on interface %q", *iface)
 
-	/* TODO: we need a storage layer per goroutine! */
 	// Set up storage layer
 	storage, err := NewStorage()
 	if err != nil {
@@ -251,17 +262,16 @@ func main() {
 	}
 
 	// Set up assembly
-	streamFactory := &httpStreamFactory{bidiStreams: make(map[uint64]*BidiStream),
-		storage: storage}
+	streamFactory := NewStreamFactory(storage)
 	streamPool := tcpassembly.NewStreamPool(streamFactory)
-	assembler := NewAssembler(streamPool)
+	assembler := tcpassembly.NewAssembler(streamPool)
 
 	// Setup CTRL-C handler channel
 	ctrlc := create_ctrl_c_handler()
 
 	// Setup channel that reports all socket kernel events (Mac OS X only)
-	netDescSource := NewOSXNetDescSource()
-	descriptors := netDescSource.Descriptors()
+	//	netDescSource := NewOSXNetDescSource()
+	//	descriptors := netDescSource.Descriptors()
 
 	// Setup packet capture
 	handle, err := pcap.OpenLive(*iface, 1600, true, pcap.BlockForever)
@@ -275,7 +285,7 @@ func main() {
 	packets := packetSource.Packets()
 
 	// Run the external command
-	pid := uint32(0)
+	//pid := uint32(0)
 	var cmd_done chan error
 	var start_time time.Time
 	if *launchCmd != "" {
@@ -299,16 +309,17 @@ func main() {
 		//		cmd.Stderr = os.Stderr
 		// Create the channel that listens for the end of the command.
 		cmd_done = create_process_ended_channel(cmd)
-		pid = uint32(cmd.Process.Pid)
+		//pid = uint32(cmd.Process.Pid)
 	}
 
-	var timeout chan bool
+	//	var timeout chan bool
+loop:
 	for {
 		select {
-		case netDesc := <-descriptors:
-			if netDesc.Pid == pid {
-				fmt.Println("event received ", netDesc)
-			}
+		/*		case netDesc := <-descriptors:
+				if netDesc.Pid == pid {
+					fmt.Println("event received ", netDesc)
+				}*/
 		case packet := <-packets:
 			if *logAllPackets {
 				log.Println(packet)
@@ -326,29 +337,44 @@ func main() {
 			if err != nil {
 				log.Printf("process done with error = %v\n", err)
 			}
-			log.Println("Process took: ", time.Now().Sub(start_time))
-
-			log.Println("Waiting for the remaining responses to arrive.")
-
-			/* Wait for a couple of seconds, just enough to get the events
-			   handled by the main function. */
-			timeout = create_timeout_channel(2)
+			break loop
 
 		case <-ctrlc:
-			/* Don't wait. */
-			timeout = create_timeout_channel(0)
-
-		case <-timeout:
-			reporting, err := NewReporting()
-			if err != nil {
-				panic(err)
-			}
-
-			if err = reporting.Report(); err != nil {
-				log.Panic(err)
-			}
-
-			os.Exit(0)
+			break loop
 		}
 	}
+
+	log.Println("Process took: ", time.Now().Sub(start_time))
+
+	/* Cleanup the go routines */
+	log.Println("Waiting for the remaining responses to arrive.")
+
+	/* Ignore any http request/response parsing errors when closing the streams. */
+	streamFactory.closed = true
+	for _, v := range streamFactory.bidiStreams {
+		if v.in != nil {
+			v.in.closed = true
+		}
+		if v.out != nil {
+			v.out.closed = true
+		}
+	}
+
+	assembler.FlushAll()
+
+	/* Close the storage layer. This will block until all pending inserts in
+	   the db are handled. */
+	storage.Close()
+
+	reporting, err := NewReporting()
+	if err != nil {
+		panic(err)
+	}
+
+	if err = reporting.Report(); err != nil {
+		log.Panic(err)
+	}
+
+	os.Exit(0)
+
 }
