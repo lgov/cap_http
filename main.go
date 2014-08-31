@@ -62,10 +62,10 @@ func (h *TCPStream) runOut() {
 	var reqID int64
 
 	for {
-		_, err := buf.Peek(1)
-		if err == io.EOF {
-			return
-		}
+		/*		_, err := buf.Peek(1)
+				if err == io.EOF {
+					return
+				}*/
 		req, err := http.ReadRequest(buf)
 		if err == io.EOF {
 			// We must read until we see an EOF... very important!
@@ -312,7 +312,7 @@ func main() {
 		//pid = uint32(cmd.Process.Pid)
 	}
 
-	//	var timeout chan bool
+	var timeout chan bool
 loop:
 	for {
 		select {
@@ -337,18 +337,22 @@ loop:
 			if err != nil {
 				log.Printf("process done with error = %v\n", err)
 			}
-			break loop
 
+			log.Println("Process took: ", time.Now().Sub(start_time))
+
+			/* Wait for a couple of seconds, just enough to get the events
+			   handled by the main function. */
+			log.Println("Waiting for the remaining responses to arrive.")
+			timeout = create_timeout_channel(10)
 		case <-ctrlc:
+			/* Don't wait. */
+			timeout = create_timeout_channel(0)
+		case <-timeout:
 			break loop
 		}
 	}
 
-	log.Println("Process took: ", time.Now().Sub(start_time))
-
 	/* Cleanup the go routines */
-	log.Println("Waiting for the remaining responses to arrive.")
-
 	/* Ignore any http request/response parsing errors when closing the streams. */
 	streamFactory.closed = true
 	for _, v := range streamFactory.bidiStreams {
