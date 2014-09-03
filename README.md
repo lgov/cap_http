@@ -5,10 +5,10 @@ A tool to capture and analyse all traffic of an application.
 
 Installation
 ------------
-Requirements: go, libpcap
+Requirements: go, libpcap, sqlite3
 
 Build with:
-    $ go build main.go storage.go
+    $ go build
 
 Run with:
-    $ ./main
+    $ ./trmon
