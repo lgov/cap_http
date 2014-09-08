@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime/pprof"
 	"strings"
 	"time"
 )
@@ -36,6 +37,7 @@ import (
 var iface = flag.String("i", "en0", "Interface to get packets from")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 var launchCmd = flag.String("e", "", "Launches the command and logs its traffic")
+var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 
 type interval struct {
 	req  *http.Request
@@ -252,6 +254,17 @@ func main() {
 	flag.Parse()
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	//	log.SetOutput(ioutil.Discard)
+
+	// Setup profiler
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer f.Close()
+		defer pprof.StopCPUProfile()
+	}
 
 	log.Printf("starting capture on interface %q", *iface)
 
