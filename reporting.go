@@ -375,7 +375,9 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 
 	fmt.Println("Requests pipelined per second")
 
-	var minReqTSns, maxRespTSns int64
+	var minReqTSns, maxRespTSns, conv int64
+
+	conv = 1000 * 1000 * 1000 // nanoseconds to seconds
 	// Start counting from when the first request was sent, so the report is
 	// lined out with the request report.
 	sql := "SELECT MIN(reqtimestamp), MAX(resptimestamp) FROM reqresps"
@@ -384,8 +386,8 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 		return err
 	}
 	stmt.Scan(&minReqTSns, &maxRespTSns)
-	minReqTS := int64(minReqTSns / 1000000000)
-	maxRespTS := int64(maxRespTSns / 1000000000)
+	minReqTS := int64(minReqTSns / conv)
+	maxRespTS := int64(maxRespTSns / conv)
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
@@ -405,7 +407,7 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": conv}
 		sql = "SELECT ((reqtimestamp-$ref) / $conv), " +
 			"COUNT((reqtimestamp-$ref) / $conv) " +
 			"FROM reqresps WHERE connID = $connID GROUP BY ((reqtimestamp-$ref) / $conv) " +
@@ -415,7 +417,7 @@ func (r *Reporting) ReportPipelinedReqsChart() error {
 			return err
 		}
 
-		args = sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		args = sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": conv}
 		sql = "SELECT ((resptimestamp-$ref)/$conv), COUNT((resptimestamp-$ref)/$conv) " +
 			"FROM reqresps WHERE connID=$connID AND resptimestamp != 0 " +
 			"GROUP BY ((resptimestamp-$ref)/$conv) ORDER BY resptimestamp"
