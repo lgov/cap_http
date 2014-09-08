@@ -34,7 +34,8 @@ import (
 )
 
 /* Command line arguments */
-var iface = flag.String("i", "en0", "Interface to get packets from")
+var iface = flag.String("ifce", "en0", "Interface to get packets from")
+var inputfile = flag.String("infile", "", "read packets from file")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 var launchCmd = flag.String("e", "", "Launches the command and logs its traffic")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -266,8 +267,6 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	log.Printf("starting capture on interface %q", *iface)
-
 	// Set up storage layer
 	storage, err := NewStorage()
 	if err != nil {
@@ -285,9 +284,15 @@ func main() {
 	// Setup channel that reports all socket kernel events (Mac OS X only)
 	//	netDescSource := NewOSXNetDescSource()
 	//	descriptors := netDescSource.Descriptors()
+	var handle *pcap.Handle
+	if *inputfile != "" {
+		handle, err = pcap.OpenOffline(*inputfile)
+	} else {
+		log.Printf("starting capture on interface %q", *iface)
+		// Setup packet capture
+		handle, err = pcap.OpenLive(*iface, 1600, true, pcap.BlockForever)
+	}
 
-	// Setup packet capture
-	handle, err := pcap.OpenLive(*iface, 1600, true, pcap.BlockForever)
 	if err != nil {
 		panic(err)
 	} else if err := handle.SetBPFFilter("tcp and port 80"); err != nil {
@@ -333,7 +338,18 @@ loop:
 				if netDesc.Pid == pid {
 					fmt.Println("event received ", netDesc)
 				}*/
-		case packet := <-packets:
+		case packet, ok := <-packets:
+			if !ok {
+				log.Println("All data read")
+				packets = nil
+				timeout = create_timeout_channel(0)
+				break
+			}
+
+			if packet == nil {
+				break
+			}
+
 			if *logAllPackets {
 				log.Println(packet)
 			}
