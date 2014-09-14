@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"runtime/pprof"
 	"strings"
 	"time"
@@ -255,6 +256,9 @@ func main() {
 	flag.Parse()
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	//	log.SetOutput(ioutil.Discard)
+
+	// run the http reader goroutines on all available CPU cores
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// Setup profiler
 	if *cpuprofile != "" {
