@@ -381,6 +381,8 @@ loop:
 		}
 	}
 
+	signal.Stop(ctrlc)
+
 	/* Cleanup the go routines */
 	/* Ignore any http request/response parsing errors when closing the streams. */
 	streamFactory.closed = true
