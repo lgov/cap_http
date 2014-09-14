@@ -47,8 +47,9 @@ type interval struct {
 }
 
 type BidiStream struct {
-	key     uint64
-	in, out *TCPStream
+	key      uint64
+	in, out  *TCPStream
+	requests chan *http.Request
 }
 
 // TCPStream will handle the actual decoding of http requests and responses.
@@ -58,10 +59,11 @@ type TCPStream struct {
 	storage          *Storage
 	bidikey          uint64
 	closed           bool
+	reqInProgress    *http.Request
 }
 
 /* This reads both HTTP requests and HTTP responses in two separate streams */
-func (h *TCPStream) runOut() {
+func (h *TCPStream) runOut(bds *BidiStream) {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
 
@@ -85,7 +87,9 @@ func (h *TCPStream) runOut() {
 		} else {
 			// bodyBytes := tcpreader.DiscardBytesToEOF(req.Body)
 			req.Body.Close()
+			bds.requests <- req
 			err = h.storage.SentRequest(h.bidikey, reqID, time.Now(), req)
+
 			if err != nil {
 				log.Println("Error storing request", err)
 			}
@@ -98,17 +102,27 @@ func (h *TCPStream) runOut() {
 	}
 }
 
-func (h *TCPStream) runIn() {
+func (h *TCPStream) runIn(bds *BidiStream) {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
+
 	for {
 		/* Don't start reading a response if no data is available */
 		_, err := buf.Peek(1)
 		if err == io.EOF {
 			return
 		}
-		/* Data available, read response */
-		resp, err := http.ReadResponse(buf, nil) // TODO: request
+
+		// Data available, read response.
+
+		// Find the request to which this is the response.
+		req := h.reqInProgress
+		if req == nil {
+			req = <-bds.requests
+			h.reqInProgress = req
+		}
+
+		resp, err := http.ReadResponse(buf, req)
 		if err == io.EOF {
 			// We must read until we see an EOF... very important!
 			//			log.Println("EOF while reading stream", h.netFlow, h.tcpFlow, ":", err)
@@ -130,7 +144,10 @@ func (h *TCPStream) runIn() {
 			if err != nil {
 				log.Println("Error storing response", err)
 			}
+
 			reqID++
+			h.reqInProgress = nil
+
 			// fmt.Print(".")
 			//log.Println("Received response from stream", h.netFlow, h.tcpFlow,
 			//	":", resp, "with", bodyBytes, "bytes in response body")
@@ -173,11 +190,12 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 	bds := h.bidiStreams[key]
 	if bds == nil {
 		//		log.Println("reading stream", netFlow, tcpFlow)
-		bds = &BidiStream{out: hstream, key: key}
+		bds = &BidiStream{out: hstream, key: key,
+			requests: make(chan *http.Request, 100)}
 		h.bidiStreams[key] = bds
 		// Start a coroutine per stream, to ensure that all data is read from
 		// the reader stream
-		go hstream.runOut()
+		go hstream.runOut(bds)
 	} else {
 		//		log.Println("opening TCP conn", netFlow, tcpFlow)
 		bds.in = hstream
@@ -187,7 +205,7 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 		}
 		// Start a coroutine per stream, to ensure that all data is read from
 		// the reader stream
-		go hstream.runIn()
+		go hstream.runIn(bds)
 	}
 
 	// ReaderStream implements tcpassembly.Stream, so we can return a pointer to it.
@@ -312,9 +330,6 @@ func main() {
 	var start_time time.Time
 	if *launchCmd != "" {
 		s := *launchCmd
-		//		n := strings.Index(*launchCmd, " ")
-		//		fmt.Println("Launching ", s[0:n], " --- ", s[n:])
-		//		cmd := exec.Command(s[0:n], strings.Split(s[n:], " "))
 		args := strings.Split(s, " ")
 		cmd := exec.Command(args[0], args[1:]...)
 		start_time = time.Now()
@@ -327,8 +342,6 @@ func main() {
 			panic(err)
 		}
 		go io.Copy(os.Stdout, cmd_stdout)
-		//		cmd.Stdout = os.Stdout
-		//		cmd.Stderr = os.Stderr
 		// Create the channel that listens for the end of the command.
 		cmd_done = create_process_ended_channel(cmd)
 		//pid = uint32(cmd.Process.Pid)
