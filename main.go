@@ -254,8 +254,8 @@ func create_process_ended_channel(cmd *exec.Cmd) (cmd_done chan error) {
 }
 
 /* Create a channel and send any CTRL-C signal over it */
-func create_ctrl_c_handler() (timeout chan os.Signal) {
-	ctrlc := make(chan os.Signal, 1)
+func create_ctrl_c_handler() (ctrlc chan os.Signal) {
+	ctrlc = make(chan os.Signal, 1)
 	signal.Notify(ctrlc, os.Interrupt)
 	return ctrlc
 }
