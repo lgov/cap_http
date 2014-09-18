@@ -37,7 +37,7 @@ func NewPacketLayer(s *Storage) *PacketLayer {
 	pl := &PacketLayer{storage: s}
 
 	// Set up assembly
-	pl.streamFactory = NewStreamFactory(pl.storage)
+	pl.streamFactory = newStreamFactory(pl.storage)
 	streamPool := tcpassembly.NewStreamPool(pl.streamFactory)
 	pl.assembler = tcpassembly.NewAssembler(streamPool)
 
@@ -70,7 +70,7 @@ func (pl *PacketLayer) CreatePacketsChannel() (packets chan gopacket.Packet) {
 
 func (pl *PacketLayer) HandlePacket(packet gopacket.Packet) {
 	if pl.storage.PacketInScope(packet) {
-		pl.streamFactory.LogPacketSize(packet)
+		pl.streamFactory.logPacketSize(packet)
 		netFlow := packet.NetworkLayer().NetworkFlow()
 		tcp := packet.TransportLayer().(*layers.TCP)
 
@@ -96,14 +96,14 @@ func (pl *PacketLayer) Close() {
 	pl.assembler.FlushAll()
 }
 
-type BidiStream struct {
+type bidiStream struct {
 	key      uint64
-	in, out  *TCPStream
+	in, out  *tcpStream
 	requests chan *http.Request
 }
 
-// TCPStream will handle the actual decoding of http requests and responses.
-type TCPStream struct {
+// tcpStream will handle the actual decoding of http requests and responses.
+type tcpStream struct {
 	netFlow, tcpFlow gopacket.Flow
 	readStream       tcpreader.ReaderStream
 	storage          *Storage
@@ -113,7 +113,7 @@ type TCPStream struct {
 }
 
 // runOut is a blocking function that reads HTTP requests from a stream.
-func (h *TCPStream) runOut(bds *BidiStream) {
+func (h *tcpStream) runOut(bds *bidiStream) {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
 
@@ -158,7 +158,7 @@ func (h *TCPStream) runOut(bds *BidiStream) {
 }
 
 // runIn is a blocking function that reads HTTP responses from a stream.
-func (h *TCPStream) runIn(bds *BidiStream) {
+func (h *tcpStream) runIn(bds *bidiStream) {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
 
@@ -214,13 +214,13 @@ func (h *TCPStream) runIn(bds *BidiStream) {
 
 // httpStreamFactory implements tcpassembly.StreamFactory
 type httpStreamFactory struct {
-	bidiStreams map[uint64]*BidiStream
+	bidiStreams map[uint64]*bidiStream
 	storage     *Storage
 	closed      bool
 }
 
-func NewStreamFactory(s *Storage) *httpStreamFactory {
-	return &httpStreamFactory{bidiStreams: make(map[uint64]*BidiStream),
+func newStreamFactory(s *Storage) *httpStreamFactory {
+	return &httpStreamFactory{bidiStreams: make(map[uint64]*bidiStream),
 		storage: s}
 }
 
@@ -235,7 +235,7 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 	// First the outgoing stream, then the incoming stream
 	key := netFlow.FastHash() ^ tcpFlow.FastHash()
 
-	hstream := &TCPStream{
+	hstream := &tcpStream{
 		netFlow:    netFlow,
 		tcpFlow:    tcpFlow,
 		readStream: tcpreader.NewReaderStream(),
@@ -246,7 +246,7 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 	bds := h.bidiStreams[key]
 	if bds == nil {
 		//      log.Println("reading stream", netFlow, tcpFlow)
-		bds = &BidiStream{out: hstream, key: key,
+		bds = &bidiStream{out: hstream, key: key,
 			requests: make(chan *http.Request, 100)}
 		h.bidiStreams[key] = bds
 		// Start a coroutine per stream, to ensure that all data is read from
@@ -268,9 +268,9 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 	return &hstream.readStream
 }
 
-// LogPacketSize calculates the payload length of a TCP packet and stores it
+// logPacketSize calculates the payload length of a TCP packet and stores it
 // in the storage layer.
-func (h *httpStreamFactory) LogPacketSize(packet gopacket.Packet) {
+func (h *httpStreamFactory) logPacketSize(packet gopacket.Packet) {
 	netFlow := packet.NetworkLayer().NetworkFlow()
 	tcpFlow := packet.TransportLayer().TransportFlow()
 	key := netFlow.FastHash() ^ tcpFlow.FastHash()
