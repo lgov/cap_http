@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-/* Command line arguments */
+// Command line arguments
 var iface = flag.String("ifce", "en0", "Interface to get packets from")
 var inputfile = flag.String("infile", "", "read packets from file")
 var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
@@ -57,7 +57,7 @@ type TCPStream struct {
 	reqInProgress    *http.Request
 }
 
-/* This reads both HTTP requests and HTTP responses in two separate streams */
+// runOut is a blocking function that reads HTTP requests from a stream.
 func (h *TCPStream) runOut(bds *BidiStream) {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
@@ -102,12 +102,13 @@ func (h *TCPStream) runOut(bds *BidiStream) {
 	}
 }
 
+// runIn is a blocking function that reads HTTP responses from a stream.
 func (h *TCPStream) runIn(bds *BidiStream) {
 	buf := bufio.NewReader(&h.readStream)
 	var reqID int64
 
 	for {
-		/* Don't start reading a response if no data is available */
+		// Don't start reading a response if no data is available
 		_, err := buf.Peek(1)
 		if err == io.EOF {
 			return
@@ -152,12 +153,11 @@ func (h *TCPStream) runIn(bds *BidiStream) {
 			//log.Println("Received response from stream", h.netFlow, h.tcpFlow,
 			//	":", resp, "with", bodyBytes, "bytes in response body")
 		}
-		/* Match the response with the next request */
 	}
 
 }
 
-/* httpStreamFactory implements tcpassembly.StreamFactory */
+// httpStreamFactory implements tcpassembly.StreamFactory
 type httpStreamFactory struct {
 	bidiStreams map[uint64]*BidiStream
 	storage     *Storage
@@ -168,15 +168,16 @@ func NewStreamFactory(s *Storage) *httpStreamFactory {
 	return &httpStreamFactory{bidiStreams: make(map[uint64]*BidiStream),
 		storage: s}
 }
+
 func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 
-	/* Watch out: this function can still get called even after all
-	   streams were flushed (via FlushAll) and closed. */
+	// Watch out: this function can still get called even after all
+	// streams were flushed (via FlushAll) and closed.
 	/*	if h.closed == true {
 			return tcpreader.NewReaderStream()
 		}
 	*/
-	/* First the outgoing stream, then the incoming stream */
+	// First the outgoing stream, then the incoming stream
 	key := netFlow.FastHash() ^ tcpFlow.FastHash()
 
 	hstream := &TCPStream{
@@ -212,6 +213,8 @@ func (h *httpStreamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stre
 	return &hstream.readStream
 }
 
+// LogPacketSize calculates the payload length of a TCP packet and stores it
+// in the storage layer.
 func (h *httpStreamFactory) LogPacketSize(packet gopacket.Packet) {
 	netFlow := packet.NetworkLayer().NetworkFlow()
 	tcpFlow := packet.TransportLayer().TransportFlow()
@@ -231,13 +234,13 @@ func (h *httpStreamFactory) LogPacketSize(packet gopacket.Packet) {
 	payloadLength := uint32(ipv4.Length - uint16(ipv4.IHL)*4 - uint16(tcp.DataOffset)*4)
 
 	if bds.in.netFlow == netFlow {
-		/* incoming */
+		// This is an incoming packet
 		err := h.storage.IncomingTCPPacket(key, payloadLength)
 		if err != nil {
 			panic(err)
 		}
 	} else {
-		/* outgoing */
+		// This is an outgoing packet
 		err := h.storage.OutgoingTCPPacket(key, payloadLength)
 		if err != nil {
 			panic(err)
@@ -245,7 +248,9 @@ func (h *httpStreamFactory) LogPacketSize(packet gopacket.Packet) {
 	}
 }
 
-func create_process_ended_channel(cmd *exec.Cmd) (cmd_done chan error) {
+// createProcessEndedChannel creates and returns a channel that will be used
+// to return the exit code of command CMD after it's finished.
+func createProcessEndedChannel(cmd *exec.Cmd) (cmd_done chan error) {
 	cmd_done = make(chan error, 1)
 	go func() {
 		cmd_done <- cmd.Wait()
@@ -253,21 +258,29 @@ func create_process_ended_channel(cmd *exec.Cmd) (cmd_done chan error) {
 	return cmd_done
 }
 
-/* Create a channel and send any CTRL-C signal over it */
-func create_ctrl_c_handler() (ctrlc chan os.Signal) {
+// createCtrlCchannel creates and returns a channel that will be used to signal
+// the user typing CTRL-C.
+func createCtrlCchannel() (ctrlc chan os.Signal) {
 	ctrlc = make(chan os.Signal, 1)
 	signal.Notify(ctrlc, os.Interrupt)
-	return ctrlc
+	return
 }
 
-/* Create a channel that will contain TRUE after T seconds. */
-func create_timeout_channel(t time.Duration) (timeout chan bool) {
+// createTimeoutChannel creates and returns a channel, starts a timer of
+// duration T and send TRUE over the channel when that durations passes.
+func createTimeoutChannel(t time.Duration) (timeout chan bool) {
 	timeout = make(chan bool, 1)
 	go func() {
 		time.Sleep(t * time.Second)
 		timeout <- true
 	}()
-	return timeout
+	return
+}
+
+func createNetDescChannel() (netDescs chan NetDescriptor) {
+	netDescSource := NewOSXNetDescSource()
+	netDescs = netDescSource.Descriptors()
+	return
 }
 
 func main() {
@@ -301,11 +314,11 @@ func main() {
 	assembler := tcpassembly.NewAssembler(streamPool)
 
 	// Setup CTRL-C handler channel
-	ctrlc := create_ctrl_c_handler()
+	ctrlc := createCtrlCchannel()
 
 	// Setup channel that reports all socket kernel events (Mac OS X only)
-	//	netDescSource := NewOSXNetDescSource()
-	//	descriptors := netDescSource.Descriptors()
+	//	netDescs := createNetDescChannel()
+
 	var handle *pcap.Handle
 	if *inputfile != "" {
 		handle, err = pcap.OpenOffline(*inputfile)
@@ -325,7 +338,7 @@ func main() {
 	packets := packetSource.Packets()
 
 	// Run the external command
-	//pid := uint32(0)
+	//	pid := uint32(0)
 	var cmd_done chan error
 	var start_time time.Time
 	if *launchCmd != "" {
@@ -343,23 +356,23 @@ func main() {
 		}
 		go io.Copy(os.Stdout, cmd_stdout)
 		// Create the channel that listens for the end of the command.
-		cmd_done = create_process_ended_channel(cmd)
-		//pid = uint32(cmd.Process.Pid)
+		cmd_done = createProcessEndedChannel(cmd)
+		//		pid = uint32(cmd.Process.Pid)
 	}
 
 	var timeout chan bool
 loop:
 	for {
 		select {
-		/*		case netDesc := <-descriptors:
+		/*		case netDesc := <-netDescs:
 				if netDesc.Pid == pid {
-					fmt.Println("event received ", netDesc)
+					log.Println("event received ", netDesc)
 				}*/
 		case packet, ok := <-packets:
 			if !ok {
 				log.Println("All data read")
 				packets = nil
-				timeout = create_timeout_channel(0)
+				timeout = createTimeoutChannel(0)
 				break
 			}
 
@@ -386,13 +399,13 @@ loop:
 
 			log.Println("Process took: ", time.Now().Sub(start_time))
 
-			/* Wait for a couple of seconds, just enough to get the events
-			   handled by the main function. */
+			// Wait for a couple of seconds, just enough to get the events
+			// handled by the main function.
 			log.Println("Waiting for the remaining responses to arrive.")
-			timeout = create_timeout_channel(10)
+			timeout = createTimeoutChannel(10)
 		case <-ctrlc:
-			/* Don't wait. */
-			timeout = create_timeout_channel(0)
+			// Don't wait.
+			timeout = createTimeoutChannel(0)
 		case <-timeout:
 			break loop
 		}
@@ -400,8 +413,8 @@ loop:
 
 	signal.Stop(ctrlc)
 
-	/* Cleanup the go routines */
-	/* Ignore any http request/response parsing errors when closing the streams. */
+	// Cleanup the go routines
+	// Ignore any http request/response parsing errors when closing the streams.
 	streamFactory.closed = true
 	for _, v := range streamFactory.bidiStreams {
 		if v.in != nil {
@@ -414,8 +427,8 @@ loop:
 
 	assembler.FlushAll()
 
-	/* Close the storage layer. This will block until all pending inserts in
-	   the db are handled. */
+	// Close the storage layer. This will block until all pending inserts in
+	// the db are handled.
 	storage.Close()
 
 	reporting, err := NewReporting()
