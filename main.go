@@ -74,7 +74,12 @@ func (h *TCPStream) runOut(bds *BidiStream) {
 				}*/
 		req, err := http.ReadRequest(buf)
 		if err == io.EOF {
+			//			log.Println("EOF while reading stream", h.netFlow, h.tcpFlow, ":", err)
 			// We must read until we see an EOF... very important!
+			err = h.storage.CloseTCPConnection(h.bidikey, time.Now())
+			if err != nil {
+				log.Println("Error storing connection close timestamp", err)
+			}
 			return
 		} else if err != nil {
 			tcpreader.DiscardBytesToFirstError(buf)

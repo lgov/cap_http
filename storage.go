@@ -192,16 +192,13 @@ func (e *OpenTCPConnectionEvent) Execute(s *Storage) error {
 	return s.insConn.Exec(e.connID, e.timestamp.UnixNano(), "", 2, "", 3)
 }
 
-/* This is the API of the Storage object.
-   These functions can be called from multiple goroutines, but serialize access
-   to the database via a channel and one goroutine responsible for executing
-   the queries */
+type CloseTCPConnectionEvent struct {
+	connID    int64
+	timestamp time.Time
+}
 
-/* TODO: fix ports */
-func (s *Storage) OpenTCPConnection(connID uint64, timestamp time.Time) error {
-	/* SQLite doesn't support uint64, convert to int64 */
-	s.queueEvent(&OpenTCPConnectionEvent{int64(connID), timestamp})
-	return nil
+func (e *CloseTCPConnectionEvent) Execute(s *Storage) error {
+	return s.closeConn.Exec(e.timestamp.UnixNano(), e.connID)
 }
 
 type IncomingTCPPacketEvent struct {
@@ -215,10 +212,6 @@ func (e *IncomingTCPPacketEvent) Execute(s *Storage) error {
 	} else if err = s.inCountConn.Exec(e.connID); err != nil {
 		return err
 	}
-	return nil
-}
-func (s *Storage) IncomingTCPPacket(connID uint64, payloadLength uint32) error {
-	s.queueEvent(&IncomingTCPPacketEvent{int64(connID), int64(payloadLength)})
 	return nil
 }
 
@@ -235,10 +228,6 @@ func (e *OutgoingTCPPacketEvent) Execute(s *Storage) error {
 	}
 	return nil
 }
-func (s *Storage) OutgoingTCPPacket(connID uint64, payloadLength uint32) error {
-	s.queueEvent(&OutgoingTCPPacketEvent{int64(connID), int64(payloadLength)})
-	return nil
-}
 
 type SentRequestEvent struct {
 	connID    int64
@@ -253,13 +242,6 @@ func (e *SentRequestEvent) Execute(s *Storage) error {
 		e.method, e.URL)
 }
 
-func (s *Storage) SentRequest(connID uint64, reqID int64, timestamp time.Time,
-	req *http.Request) error {
-	s.queueEvent(&SentRequestEvent{int64(connID), reqID, timestamp, req.Method,
-		req.URL.String()})
-	return nil
-}
-
 type ReceivedResponseEvent struct {
 	connID     int64
 	reqID      int64
@@ -270,6 +252,42 @@ type ReceivedResponseEvent struct {
 func (e *ReceivedResponseEvent) Execute(s *Storage) error {
 	return s.insResp.Exec(e.timestamp.UnixNano(), e.statusCode, e.reqID, e.connID)
 }
+
+/* This is the API of the Storage object.
+   These functions can be called from multiple goroutines, but serialize access
+   to the database via a channel and one goroutine responsible for executing
+   the queries */
+
+/* TODO: fix ports */
+func (s *Storage) OpenTCPConnection(connID uint64, timestamp time.Time) error {
+	/* SQLite doesn't support uint64, convert to int64 */
+	s.queueEvent(&OpenTCPConnectionEvent{int64(connID), timestamp})
+	return nil
+}
+
+func (s *Storage) CloseTCPConnection(connID uint64, timestamp time.Time) error {
+	/* SQLite doesn't support uint64, convert to int64 */
+	s.queueEvent(&CloseTCPConnectionEvent{int64(connID), timestamp})
+	return nil
+}
+
+func (s *Storage) IncomingTCPPacket(connID uint64, payloadLength uint32) error {
+	s.queueEvent(&IncomingTCPPacketEvent{int64(connID), int64(payloadLength)})
+	return nil
+}
+
+func (s *Storage) OutgoingTCPPacket(connID uint64, payloadLength uint32) error {
+	s.queueEvent(&OutgoingTCPPacketEvent{int64(connID), int64(payloadLength)})
+	return nil
+}
+
+func (s *Storage) SentRequest(connID uint64, reqID int64, timestamp time.Time,
+	req *http.Request) error {
+	s.queueEvent(&SentRequestEvent{int64(connID), reqID, timestamp, req.Method,
+		req.URL.String()})
+	return nil
+}
+
 func (s *Storage) ReceivedResponse(connID uint64, reqID int64, timestamp time.Time,
 	resp *http.Response) error {
 	s.queueEvent(&ReceivedResponseEvent{int64(connID), reqID, timestamp, resp.StatusCode})
