@@ -18,7 +18,6 @@ import (
 	"code.google.com/p/go-sqlite/go1/sqlite3"
 	"code.google.com/p/go.net/context"
 	"code.google.com/p/gopacket"
-	"fmt"
 	"net/http"
 	"time"
 )
@@ -157,8 +156,8 @@ loop:
 				break loop
 			}
 		case <-s.closing:
-			remaining := len(s.queue)
-			fmt.Println("Cancelling storage, remaining on queue:", remaining)
+			//			remaining := len(s.queue)
+			//			fmt.Println("Cancelling storage, remaining on queue:", remaining)
 			closing = true
 		default:
 			if len(s.queue) == 0 && closing {
