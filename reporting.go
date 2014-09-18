@@ -160,7 +160,7 @@ func (r *Reporting) bandwidthUsage(connID int64) (inByteS float64, outByteS floa
 func (r *Reporting) ReportConnSummary() error {
 	fmt.Println()
 
-	sql := "SELECT id, opentimestamp FROM conns"
+	sql := "SELECT id FROM conns"
 	i := 0
 
 	fmt.Printf("Conn\t# reqs\t# noresp  resp time  avg queue  in MiB  out MiB   in pkt  out pkt  in KiB/s  out KiB/s  per method\t\n")
@@ -168,8 +168,7 @@ func (r *Reporting) ReportConnSummary() error {
 		i++
 
 		var connID int64
-		var nsec int64
-		connstmt.Scan(&connID, &nsec)
+		connstmt.Scan(&connID)
 
 		fmt.Printf("%4d\t", i)
 
@@ -257,33 +256,35 @@ func (r *Reporting) ReportReqsChart() error {
 
 	fmt.Println("Requests per second")
 
-	var minReqTSns, maxReqTSns int64
-	sql := "SELECT MIN(reqtimestamp), MAX(reqtimestamp) FROM reqresps"
+	var minOpenTSns, maxCloseTSns int64
+	sql := "SELECT MIN(opentimestamp), MAX(closetimestamp) FROM conns"
 	stmt, err := r.c.Query(sql)
 	if err != nil {
 		return err
 	}
-	stmt.Scan(&minReqTSns, &maxReqTSns)
-	minReqTS := int64(minReqTSns / 1000000000)
-	maxReqTS := int64(maxReqTSns / 1000000000)
+	stmt.Scan(&minOpenTSns, &maxCloseTSns)
+	minOpenTS := int64(minOpenTSns / 1000000000)
+	maxCloseTS := int64(maxCloseTSns / 1000000000)
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
-	for i := minReqTS; i <= maxReqTS; i++ {
-		fmt.Printf("%4d", i-minReqTS+1)
+	for i := minOpenTS; i <= maxCloseTS; i++ {
+		fmt.Printf("%4d", i-minOpenTS+1)
 	}
 	fmt.Println("   t(s)")
 
-	sql = "SELECT id FROM conns"
+	args := sqlite3.NamedArgs{"$ref": minOpenTSns, "$conv": 1000000000}
+	sql = "SELECT id, ((opentimestamp-$ref)/$conv), ((closetimestamp-$ref)/$conv) FROM conns"
 	connnr := 0
-	for connstmt, err := r.c.Query(sql); err == nil; err = connstmt.Next() {
+	for connstmt, err := r.c.Query(sql, args); err == nil; err = connstmt.Next() {
 		var connID int64
-		connstmt.Scan(&connID)
+		var openTS, closeTS int64
+		connstmt.Scan(&connID, &openTS, &closeTS)
 
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minOpenTSns, "$conv": 1000000000}
 		sql = "SELECT ((reqtimestamp-$ref) / $conv), " +
 			"COUNT((reqtimestamp-$ref) / $conv) " +
 			"FROM reqresps WHERE connID = $connID GROUP BY ((reqtimestamp-$ref) / $conv) " +
@@ -295,16 +296,41 @@ func (r *Reporting) ReportReqsChart() error {
 			fmt.Println("- n/a -")
 			continue
 		}
-		for ; err == nil; err = tsstmt.Next() {
-			var reqsTS, reqCount int64
-			tsstmt.Scan(&reqsTS, &reqCount)
 
-			for ; i < reqsTS; i++ {
-				fmt.Printf("    ")
+		var reqCount int64
+		reqsTS := int64(-1)
+		tsstmt.Scan(&reqsTS, &reqCount)
+
+		//		fmt.Print("open: ", openTS, "close: ", closeTS)
+		for i = int64(0); i <= maxCloseTS-minOpenTS; i++ {
+
+			// get requests count at next timestamp
+			if i > reqsTS {
+				if err = tsstmt.Next(); err == nil {
+					tsstmt.Scan(&reqsTS, &reqCount)
+				} else if err == io.EOF {
+					reqsTS = 100000000
+				} else {
+					break
+				}
 			}
-			fmt.Printf("%4d", reqCount)
-			i++
+
+			connOpen := " "
+			connClose := ""
+			switch i {
+			case openTS:
+				connOpen = "["
+			case closeTS:
+				connClose = "]"
+			}
+
+			if i == reqsTS {
+				fmt.Printf("%s%3d%s", connOpen, reqCount, connClose)
+			} else {
+				fmt.Printf("%s   %s", connOpen, connClose)
+			}
 		}
+
 		fmt.Println()
 	}
 	return nil
