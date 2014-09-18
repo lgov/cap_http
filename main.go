@@ -41,11 +41,6 @@ var logAllPackets = flag.Bool("v", false, "Logs every packet in great detail")
 var launchCmd = flag.String("e", "", "Launches the command and logs its traffic")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 
-type interval struct {
-	req  *http.Request
-	resp *http.Response
-}
-
 type BidiStream struct {
 	key      uint64
 	in, out  *TCPStream
