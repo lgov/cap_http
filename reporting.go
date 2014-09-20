@@ -341,36 +341,35 @@ func (r *Reporting) ReportRespsChart() error {
 
 	fmt.Println("Responses per second")
 
-	var minReqTSns, maxRespTSns int64
-	// Start counting from when the first request was sent, so the report is
-	// lined out with the request report.
-	sql := "SELECT MIN(reqtimestamp), MAX(resptimestamp) FROM reqresps"
+	var minOpenTSns, maxCloseTSns int64
+	sql := "SELECT MIN(opentimestamp), MAX(closetimestamp) FROM conns"
 	stmt, err := r.c.Query(sql)
 	if err != nil {
 		return err
 	}
-	stmt.Scan(&minReqTSns, &maxRespTSns)
-	minReqTS := int64(minReqTSns / 1000000000)
-	maxRespTS := int64(maxRespTSns / 1000000000)
+	stmt.Scan(&minOpenTSns, &maxCloseTSns)
+	minOpenTS := int64(minOpenTSns / 1000000000)
+	maxCloseTS := int64(maxCloseTSns / 1000000000)
 
 	/* Print the report header */
 	fmt.Printf("Conn\t")
-	var i int64
-	for i = 1; i <= maxRespTS-minReqTS+1; i++ {
-		fmt.Printf("%4d", i)
+	for i := minOpenTS; i <= maxCloseTS; i++ {
+		fmt.Printf("%4d", i-minOpenTS+1)
 	}
 	fmt.Println("   t(s)")
 
-	sql = "SELECT id FROM conns"
+	args := sqlite3.NamedArgs{"$ref": minOpenTSns, "$conv": 1000000000}
+	sql = "SELECT id, ((opentimestamp-$ref)/$conv), ((closetimestamp-$ref)/$conv) FROM conns"
 	connnr := 0
-	for connstmt, err := r.c.Query(sql); err == nil; err = connstmt.Next() {
+	for connstmt, err := r.c.Query(sql, args); err == nil; err = connstmt.Next() {
 		var connID int64
-		connstmt.Scan(&connID)
+		var openTS, closeTS int64
+		connstmt.Scan(&connID, &openTS, &closeTS)
 
 		connnr++
 		fmt.Printf("%4d\t", connnr)
 
-		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minReqTSns, "$conv": 1000000000}
+		args := sqlite3.NamedArgs{"$connID": connID, "$ref": minOpenTSns, "$conv": 1000000000}
 		sql = "SELECT ((resptimestamp-$ref)/$conv), COUNT((resptimestamp-$ref)/$conv) " +
 			"FROM reqresps WHERE connID=$connID AND resptimestamp != 0 " +
 			"GROUP BY ((resptimestamp-$ref)/$conv) ORDER BY resptimestamp"
@@ -381,16 +380,39 @@ func (r *Reporting) ReportRespsChart() error {
 			fmt.Println("- n/a -")
 			continue
 		}
-		for ; err == nil; err = tsstmt.Next() {
-			var respsTS, respCount int64
-			tsstmt.Scan(&respsTS, &respCount)
 
-			for ; i < respsTS; i++ {
-				fmt.Printf("    ")
+		var respCount int64
+		respsTS := int64(-1)
+		tsstmt.Scan(&respsTS, &respCount)
+
+		for i = int64(0); i <= maxCloseTS-minOpenTS; i++ {
+			// get requests count at next timestamp
+			if i > respsTS {
+				if err = tsstmt.Next(); err == nil {
+					tsstmt.Scan(&respsTS, &respCount)
+				} else if err == io.EOF {
+					respsTS = 100000000
+				} else {
+					break
+				}
 			}
-			fmt.Printf("%4d", respCount)
-			i++
+
+			connOpen := " "
+			connClose := ""
+			switch i {
+			case openTS:
+				connOpen = "["
+			case closeTS:
+				connClose = "]"
+			}
+
+			if i == respsTS {
+				fmt.Printf("%s%3d%s", connOpen, respCount, connClose)
+			} else {
+				fmt.Printf("%s   %s", connOpen, connClose)
+			}
 		}
+
 		fmt.Println()
 	}
 	return nil
