@@ -286,7 +286,14 @@ func (h *httpStreamFactory) logPacketSize(packet gopacket.Packet) {
 		return
 	}
 
-	payloadLength := uint32(ipv4.Length - uint16(ipv4.IHL)*4 - uint16(tcp.DataOffset)*4)
+	payloadLength := uint32(0)
+
+	if ipv4 != nil {
+		payloadLength += uint32(ipv4.Length - uint16(ipv4.IHL)*4)
+	}
+	if tcp != nil {
+		payloadLength -= uint32(uint16(tcp.DataOffset) * 4)
+	}
 
 	if bds.in.netFlow == netFlow {
 		// This is an incoming packet
