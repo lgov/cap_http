@@ -63,11 +63,13 @@ func createTimeoutChannel(t time.Duration) (timeout chan bool) {
 	return
 }
 
+/*
 func createNetDescChannel() (netDescs chan NetDescriptor) {
 	netDescSource := NewOSXNetDescSource()
 	netDescs = netDescSource.Descriptors()
 	return
 }
+*/
 
 func main() {
 	flag.Parse()
